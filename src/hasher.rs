@@ -12,6 +12,7 @@ use walkdir::WalkDir;
 /// Result of hashing a single file
 #[derive(Clone, Debug)]
 pub struct FileHash {
+    #[allow(dead_code)] // Available for future use (e.g., opening files)
     pub path: PathBuf,
     pub relative_path: String,
     pub hash: String,
@@ -263,4 +264,328 @@ pub fn format_verification_results(verification: &HashVerification) -> String {
     }
     
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn create_temp_dir(test_name: &str) -> PathBuf {
+        let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let temp_dir = std::env::temp_dir().join(format!(
+            "roboaft_test_{}_{}_{}",
+            std::process::id(),
+            test_name,
+            counter
+        ));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        temp_dir
+    }
+
+    fn cleanup_temp_dir(path: &Path) {
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn test_hash_file() {
+        let temp_dir = create_temp_dir("hash_file");
+        let test_file = temp_dir.join("test.txt");
+        
+        fs::write(&test_file, "Hello, World!").expect("Failed to write test file");
+        
+        let hash = hash_file(&test_file).expect("Failed to hash file");
+        
+        // SHA-256 of "Hello, World!" is known
+        assert_eq!(hash, "dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f");
+        
+        cleanup_temp_dir(&temp_dir);
+    }
+
+    #[test]
+    fn test_hash_empty_file() {
+        let temp_dir = create_temp_dir("hash_empty");
+        let test_file = temp_dir.join("empty.txt");
+        
+        fs::write(&test_file, "").expect("Failed to write test file");
+        
+        let hash = hash_file(&test_file).expect("Failed to hash file");
+        
+        // SHA-256 of empty string
+        assert_eq!(hash, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        
+        cleanup_temp_dir(&temp_dir);
+    }
+
+    #[test]
+    fn test_hash_nonexistent_file() {
+        let result = hash_file(Path::new("/nonexistent/file.txt"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_collect_files() {
+        let temp_dir = create_temp_dir("collect_files");
+        
+        // Create nested structure
+        let subdir = temp_dir.join("subdir");
+        fs::create_dir_all(&subdir).unwrap();
+        
+        fs::write(temp_dir.join("file1.txt"), "content1").unwrap();
+        fs::write(temp_dir.join("file2.txt"), "content2").unwrap();
+        fs::write(subdir.join("file3.txt"), "content3").unwrap();
+        
+        let files = collect_files(&temp_dir).expect("Failed to collect files");
+        
+        assert_eq!(files.len(), 3);
+        
+        cleanup_temp_dir(&temp_dir);
+    }
+
+    #[test]
+    fn test_collect_files_empty_dir() {
+        let temp_dir = create_temp_dir("collect_empty");
+        
+        let files = collect_files(&temp_dir).expect("Failed to collect files");
+        assert_eq!(files.len(), 0);
+        
+        cleanup_temp_dir(&temp_dir);
+    }
+
+    #[test]
+    fn test_collect_files_nonexistent_dir() {
+        let result = collect_files(Path::new("/nonexistent/directory"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_compare_hashes_identical() {
+        let source = vec![
+            FileHash {
+                path: PathBuf::from("/src/file1.txt"),
+                relative_path: "file1.txt".to_string(),
+                hash: "abc123".to_string(),
+                size: 100,
+            },
+            FileHash {
+                path: PathBuf::from("/src/file2.txt"),
+                relative_path: "file2.txt".to_string(),
+                hash: "def456".to_string(),
+                size: 200,
+            },
+        ];
+        
+        let dest = vec![
+            FileHash {
+                path: PathBuf::from("/dst/file1.txt"),
+                relative_path: "file1.txt".to_string(),
+                hash: "abc123".to_string(),
+                size: 100,
+            },
+            FileHash {
+                path: PathBuf::from("/dst/file2.txt"),
+                relative_path: "file2.txt".to_string(),
+                hash: "def456".to_string(),
+                size: 200,
+            },
+        ];
+        
+        let result = compare_hashes(&source, &dest);
+        
+        assert!(result.is_successful());
+        assert_eq!(result.matched.len(), 2);
+        assert_eq!(result.mismatched.len(), 0);
+        assert_eq!(result.missing_in_dest.len(), 0);
+        assert_eq!(result.extra_in_dest.len(), 0);
+    }
+
+    #[test]
+    fn test_compare_hashes_mismatch() {
+        let source = vec![
+            FileHash {
+                path: PathBuf::from("/src/file1.txt"),
+                relative_path: "file1.txt".to_string(),
+                hash: "abc123".to_string(),
+                size: 100,
+            },
+        ];
+        
+        let dest = vec![
+            FileHash {
+                path: PathBuf::from("/dst/file1.txt"),
+                relative_path: "file1.txt".to_string(),
+                hash: "different_hash".to_string(),
+                size: 100,
+            },
+        ];
+        
+        let result = compare_hashes(&source, &dest);
+        
+        assert!(!result.is_successful());
+        assert_eq!(result.matched.len(), 0);
+        assert_eq!(result.mismatched.len(), 1);
+        assert_eq!(result.mismatched[0].0, "file1.txt");
+    }
+
+    #[test]
+    fn test_compare_hashes_missing_in_dest() {
+        let source = vec![
+            FileHash {
+                path: PathBuf::from("/src/file1.txt"),
+                relative_path: "file1.txt".to_string(),
+                hash: "abc123".to_string(),
+                size: 100,
+            },
+            FileHash {
+                path: PathBuf::from("/src/file2.txt"),
+                relative_path: "file2.txt".to_string(),
+                hash: "def456".to_string(),
+                size: 200,
+            },
+        ];
+        
+        let dest = vec![
+            FileHash {
+                path: PathBuf::from("/dst/file1.txt"),
+                relative_path: "file1.txt".to_string(),
+                hash: "abc123".to_string(),
+                size: 100,
+            },
+        ];
+        
+        let result = compare_hashes(&source, &dest);
+        
+        assert!(!result.is_successful());
+        assert_eq!(result.matched.len(), 1);
+        assert_eq!(result.missing_in_dest.len(), 1);
+        assert!(result.missing_in_dest.contains(&"file2.txt".to_string()));
+    }
+
+    #[test]
+    fn test_compare_hashes_extra_in_dest() {
+        let source = vec![
+            FileHash {
+                path: PathBuf::from("/src/file1.txt"),
+                relative_path: "file1.txt".to_string(),
+                hash: "abc123".to_string(),
+                size: 100,
+            },
+        ];
+        
+        let dest = vec![
+            FileHash {
+                path: PathBuf::from("/dst/file1.txt"),
+                relative_path: "file1.txt".to_string(),
+                hash: "abc123".to_string(),
+                size: 100,
+            },
+            FileHash {
+                path: PathBuf::from("/dst/extra.txt"),
+                relative_path: "extra.txt".to_string(),
+                hash: "extra_hash".to_string(),
+                size: 50,
+            },
+        ];
+        
+        let result = compare_hashes(&source, &dest);
+        
+        // Extra files don't cause failure
+        assert!(result.is_successful());
+        assert_eq!(result.matched.len(), 1);
+        assert_eq!(result.extra_in_dest.len(), 1);
+    }
+
+    #[test]
+    fn test_hash_verification_summary() {
+        let verification = HashVerification {
+            matched: vec![("file1.txt".to_string(), "hash1".to_string())],
+            mismatched: vec![("file2.txt".to_string(), "src".to_string(), "dst".to_string())],
+            missing_in_dest: vec!["file3.txt".to_string()],
+            extra_in_dest: vec!["file4.txt".to_string()],
+        };
+        
+        let summary = verification.summary();
+        assert!(summary.contains("Matched: 1"));
+        assert!(summary.contains("Mismatched: 1"));
+        assert!(summary.contains("Missing in destination: 1"));
+        assert!(summary.contains("Extra in destination: 1"));
+    }
+
+    #[test]
+    fn test_format_hash_results() {
+        let hashes = vec![
+            FileHash {
+                path: PathBuf::from("/path/file.txt"),
+                relative_path: "file.txt".to_string(),
+                hash: "abc123def456".to_string(),
+                size: 1024,
+            },
+        ];
+        
+        let output = format_hash_results(&hashes);
+        assert!(output.contains("file.txt"));
+        assert!(output.contains("abc123def456"));
+        assert!(output.contains("1024 bytes"));
+    }
+
+    #[test]
+    fn test_format_verification_results() {
+        let verification = HashVerification {
+            matched: vec![("matched.txt".to_string(), "abc123def456abc1".to_string())],
+            mismatched: vec![("bad.txt".to_string(), "src_hash".to_string(), "dst_hash".to_string())],
+            missing_in_dest: vec!["missing.txt".to_string()],
+            extra_in_dest: vec!["extra.txt".to_string()],
+        };
+        
+        let output = format_verification_results(&verification);
+        assert!(output.contains("matched.txt"));
+        assert!(output.contains("bad.txt"));
+        assert!(output.contains("missing.txt"));
+        assert!(output.contains("extra.txt"));
+        assert!(output.contains("✓ Matched"));
+        assert!(output.contains("✗ Mismatched"));
+    }
+
+    #[test]
+    fn test_hash_directory_integration() {
+        let temp_dir = create_temp_dir("hash_dir_integration");
+        
+        // Create test files
+        fs::write(temp_dir.join("file1.txt"), "content1").unwrap();
+        fs::write(temp_dir.join("file2.txt"), "content2").unwrap();
+        
+        let (tx, rx) = mpsc::channel();
+        let handle = hash_directory(&temp_dir, tx);
+        
+        // Collect progress updates
+        let mut starting_count = 0;
+        let mut file_complete_count = 0;
+        let mut final_hashes = Vec::new();
+        
+        loop {
+            match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+                Ok(HashProgress::Starting(n)) => starting_count = n,
+                Ok(HashProgress::FileComplete(_)) => file_complete_count += 1,
+                Ok(HashProgress::Complete(hashes)) => {
+                    final_hashes = hashes;
+                    break;
+                }
+                Ok(HashProgress::Error(e)) => panic!("Hash error: {}", e),
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        
+        handle.join().expect("Hash thread panicked").expect("Hash failed");
+        
+        assert_eq!(starting_count, 2);
+        assert_eq!(file_complete_count, 2);
+        assert_eq!(final_hashes.len(), 2);
+        
+        cleanup_temp_dir(&temp_dir);
+    }
 }

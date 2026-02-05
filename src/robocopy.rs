@@ -395,3 +395,175 @@ impl RobocopyOptions {
         format!("robocopy {}", args.join(" "))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_options() {
+        let options = RobocopyOptions::default();
+        assert!(!options.mirror.enabled);
+        assert!(!options.copy_all.enabled);
+        assert_eq!(options.current_preset, PresetGroup::None);
+    }
+
+    #[test]
+    fn test_basic_command_building() {
+        let options = RobocopyOptions::default();
+        let cmd = options.build_command_string("C:\\source", "C:\\dest");
+        assert_eq!(cmd, "robocopy C:\\source C:\\dest");
+    }
+
+    #[test]
+    fn test_mirror_preset() {
+        let mut options = RobocopyOptions::default();
+        options.apply_preset(PresetGroup::MirrorWithMetadata);
+        
+        assert!(options.mirror.enabled);
+        assert!(options.copy_flags.enabled);
+        assert_eq!(options.copy_flags.value, "DATS");
+        assert!(options.copy_restartable.enabled);
+        assert!(options.retry_count.enabled);
+        assert_eq!(options.retry_count.value, "3");
+        assert!(options.multi_thread.enabled);
+        assert_eq!(options.multi_thread.value, "8");
+        
+        let args = options.build_args("C:\\src", "C:\\dst");
+        assert!(args.contains(&"/MIR".to_string()));
+        assert!(args.contains(&"/COPY:DATS".to_string()));
+        assert!(args.contains(&"/Z".to_string()));
+        assert!(args.contains(&"/R:3".to_string()));
+        assert!(args.contains(&"/MT:8".to_string()));
+    }
+
+    #[test]
+    fn test_copy_all_preserve_preset() {
+        let mut options = RobocopyOptions::default();
+        options.apply_preset(PresetGroup::CopyAllPreserve);
+        
+        assert!(options.copy_subdirs_empty.enabled);
+        assert!(options.copy_flags.enabled);
+        assert_eq!(options.copy_flags.value, "DATS");
+        assert!(!options.copy_all.enabled, "Should use COPY:DATS instead of COPYALL to avoid admin requirement");
+        
+        let args = options.build_args("C:\\src", "C:\\dst");
+        assert!(args.contains(&"/E".to_string()));
+        assert!(args.contains(&"/COPY:DATS".to_string()));
+        assert!(!args.iter().any(|a| a.contains("COPYALL")));
+    }
+
+    #[test]
+    fn test_move_files_preset() {
+        let mut options = RobocopyOptions::default();
+        options.apply_preset(PresetGroup::MoveFiles);
+        
+        assert!(options.move_files_dirs.enabled);
+        assert!(options.copy_subdirs_empty.enabled);
+        
+        let args = options.build_args("C:\\src", "C:\\dst");
+        assert!(args.contains(&"/MOVE".to_string()));
+        assert!(args.contains(&"/E".to_string()));
+    }
+
+    #[test]
+    fn test_incremental_backup_preset() {
+        let mut options = RobocopyOptions::default();
+        options.apply_preset(PresetGroup::IncrementalBackup);
+        
+        assert!(options.copy_subdirs_empty.enabled);
+        assert!(options.exclude_older.enabled);
+        assert!(options.multi_thread.enabled);
+        
+        let args = options.build_args("C:\\src", "C:\\dst");
+        assert!(args.contains(&"/E".to_string()));
+        assert!(args.contains(&"/XO".to_string()));
+    }
+
+    #[test]
+    fn test_quick_copy_preset() {
+        let mut options = RobocopyOptions::default();
+        options.apply_preset(PresetGroup::QuickCopy);
+        
+        assert!(options.copy_subdirs_empty.enabled);
+        assert!(options.multi_thread.enabled);
+        assert_eq!(options.multi_thread.value, "16");
+        assert_eq!(options.retry_count.value, "1");
+        
+        let args = options.build_args("C:\\src", "C:\\dst");
+        assert!(args.contains(&"/MT:16".to_string()));
+        assert!(args.contains(&"/R:1".to_string()));
+    }
+
+    #[test]
+    fn test_reset_all() {
+        let mut options = RobocopyOptions::default();
+        options.apply_preset(PresetGroup::MirrorWithMetadata);
+        options.reset_all();
+        
+        assert!(!options.mirror.enabled);
+        assert!(!options.copy_all.enabled);
+        assert!(!options.multi_thread.enabled);
+    }
+
+    #[test]
+    fn test_option_with_value() {
+        let mut options = RobocopyOptions::default();
+        options.multi_thread.enabled = true;
+        options.multi_thread.value = "16".to_string();
+        
+        let args = options.build_args("C:\\src", "C:\\dst");
+        assert!(args.contains(&"/MT:16".to_string()));
+    }
+
+    #[test]
+    fn test_option_with_empty_value_not_added() {
+        let mut options = RobocopyOptions::default();
+        options.copy_levels.enabled = true;
+        options.copy_levels.value = "".to_string();
+        
+        let args = options.build_args("C:\\src", "C:\\dst");
+        assert!(!args.iter().any(|a| a.contains("/LEV:")));
+    }
+
+    #[test]
+    fn test_multiple_options() {
+        let mut options = RobocopyOptions::default();
+        options.copy_subdirs_empty.enabled = true;
+        options.copy_restartable.enabled = true;
+        options.log_verbose.enabled = true;
+        options.no_progress.enabled = true;
+        
+        let args = options.build_args("C:\\src", "C:\\dst");
+        assert!(args.contains(&"/E".to_string()));
+        assert!(args.contains(&"/Z".to_string()));
+        assert!(args.contains(&"/V".to_string()));
+        assert!(args.contains(&"/NP".to_string()));
+    }
+
+    #[test]
+    fn test_preset_names() {
+        assert_eq!(PresetGroup::None.name(), "Custom");
+        assert_eq!(PresetGroup::MirrorWithMetadata.name(), "Mirror with Full Metadata");
+        assert_eq!(PresetGroup::CopyAllPreserve.name(), "Copy All & Preserve Attributes");
+        assert_eq!(PresetGroup::MoveFiles.name(), "Move Files (Delete from Source)");
+        assert_eq!(PresetGroup::IncrementalBackup.name(), "Incremental Backup");
+        assert_eq!(PresetGroup::QuickCopy.name(), "Quick Copy (No Extras)");
+    }
+
+    #[test]
+    fn test_robocopy_option_new() {
+        let opt = RobocopyOption::new("/TEST", "Test Option", "A test description");
+        assert_eq!(opt.flag, "/TEST");
+        assert_eq!(opt.name, "Test Option");
+        assert!(!opt.enabled);
+        assert!(!opt.has_value);
+    }
+
+    #[test]
+    fn test_robocopy_option_with_value() {
+        let opt = RobocopyOption::with_value("/TEST:", "Test", "Description", "default");
+        assert!(opt.has_value);
+        assert_eq!(opt.value, "default");
+    }
+}

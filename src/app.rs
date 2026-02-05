@@ -1,8 +1,8 @@
 //! Main application GUI module
 
 use crate::hasher::{
-    compare_hashes, format_verification_results, hash_directory, FileHash, HashProgress,
-    HashVerification,
+    compare_hashes, format_hash_results, format_verification_results, hash_directory, FileHash,
+    HashProgress, HashVerification,
 };
 use crate::history::{CommandHistory, HistoryEntry};
 use crate::robocopy::{PresetGroup, RobocopyOption, RobocopyOptions};
@@ -462,8 +462,14 @@ impl RoboAftApp {
                 HashProgress::FileStarted(path) => {
                     self.hash_progress_text = format!("Hashing: {}", path);
                 }
-                HashProgress::FileComplete(_) => {
+                HashProgress::FileComplete(file_hash) => {
                     self.hash_files_processed += 1;
+                    // Log detailed hash info
+                    self.add_console_line(format!(
+                        "  Hashed: {} ({} bytes)",
+                        file_hash.relative_path,
+                        file_hash.size
+                    ));
                 }
                 HashProgress::Complete(hashes) => {
                     // Store hashes - first complete is source, second is dest
@@ -544,26 +550,24 @@ impl RoboAftApp {
             .set_file_name("roboaft_log.txt")
             .save_file()
         {
-            let content = self.log_entries.join("\n");
+            let mut content = self.log_entries.join("\n");
+            
+            // Append detailed hash information if available
+            if !self.source_hashes.is_empty() {
+                content.push_str("\n\n");
+                content.push_str("=== SOURCE FILE HASHES ===\n");
+                content.push_str(&format_hash_results(&self.source_hashes));
+            }
+            if !self.dest_hashes.is_empty() {
+                content.push_str("\n\n");
+                content.push_str("=== DESTINATION FILE HASHES ===\n");
+                content.push_str(&format_hash_results(&self.dest_hashes));
+            }
+            
             if let Err(e) = std::fs::write(&path, content) {
                 eprintln!("Failed to save log: {}", e);
             }
         }
-    }
-
-    fn render_option_checkbox(&mut self, ui: &mut egui::Ui, opt: &mut RobocopyOption) {
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut opt.enabled, &opt.name);
-            if opt.has_value && opt.enabled {
-                ui.add(egui::TextEdit::singleline(&mut opt.value).desired_width(60.0));
-            }
-        });
-        ui.label(
-            egui::RichText::new(&opt.description)
-                .small()
-                .color(egui::Color32::GRAY),
-        );
-        ui.add_space(4.0);
     }
 }
 
@@ -931,6 +935,7 @@ impl RoboAftApp {
 
     fn render_history_entry(&mut self, ui: &mut egui::Ui, entry: &HistoryEntry) {
         let id = entry.id;
+        let is_renaming = self.selected_history_id == Some(id);
         
         egui::Frame::default()
             .inner_margin(8.0)
@@ -948,10 +953,42 @@ impl RoboAftApp {
 
                     // Entry info
                     ui.vertical(|ui| {
-                        ui.label(
-                            egui::RichText::new(entry.display_name())
-                                .strong(),
-                        );
+                        if is_renaming {
+                            // Show rename text field
+                            let response = ui.add(
+                                egui::TextEdit::singleline(&mut self.rename_buffer)
+                                    .desired_width(200.0)
+                                    .hint_text("Enter name...")
+                            );
+                            
+                            // Auto-focus the text field
+                            if response.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                // Save the new name
+                                self.history.set_name(id, self.rename_buffer.clone());
+                                let _ = self.history.save();
+                                self.selected_history_id = None;
+                                self.rename_buffer.clear();
+                            } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                // Cancel renaming
+                                self.selected_history_id = None;
+                                self.rename_buffer.clear();
+                            }
+                        } else {
+                            // Show entry name (clickable to rename)
+                            let name_response = ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(entry.display_name()).strong()
+                                ).sense(egui::Sense::click())
+                            );
+                            if name_response.double_clicked() {
+                                self.selected_history_id = Some(id);
+                                self.rename_buffer = entry.name.clone().unwrap_or_default();
+                            }
+                            if name_response.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+                            }
+                        }
+                        
                         ui.label(
                             egui::RichText::new(&entry.command)
                                 .small()
@@ -964,6 +1001,12 @@ impl RoboAftApp {
                         if ui.button("🗑").clicked() {
                             self.history.delete_entry(id);
                             let _ = self.history.save();
+                        }
+                        
+                        // Rename button
+                        if ui.button("✏").on_hover_text("Rename").clicked() {
+                            self.selected_history_id = Some(id);
+                            self.rename_buffer = entry.name.clone().unwrap_or_default();
                         }
 
                         // Load button

@@ -145,7 +145,249 @@ impl CommandHistory {
     }
 
     /// Get entry by ID
+    #[allow(dead_code)] // Public API for future use
     pub fn get_entry(&self, id: u64) -> Option<&HistoryEntry> {
         self.entries.iter().find(|e| e.id == id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::robocopy::RobocopyOptions;
+
+    fn create_test_entry(source: &str, dest: &str) -> HistoryEntry {
+        HistoryEntry::new(
+            source.to_string(),
+            dest.to_string(),
+            format!("robocopy \"{}\" \"{}\"", source, dest),
+            RobocopyOptions::default(),
+        )
+    }
+
+    #[test]
+    fn test_history_entry_new() {
+        let entry = create_test_entry("C:\\Source", "D:\\Dest");
+        
+        assert_eq!(entry.source, "C:\\Source");
+        assert_eq!(entry.destination, "D:\\Dest");
+        assert!(!entry.saved);
+        assert!(entry.name.is_none());
+        assert!(entry.id > 0);
+    }
+
+    #[test]
+    fn test_history_entry_display_name_default() {
+        let entry = create_test_entry("C:\\Source", "D:\\Dest");
+        let display = entry.display_name();
+        
+        assert!(display.contains("C:\\Source"));
+        assert!(display.contains("D:\\Dest"));
+        assert!(display.contains("→"));
+    }
+
+    #[test]
+    fn test_history_entry_display_name_custom() {
+        let mut entry = create_test_entry("C:\\Source", "D:\\Dest");
+        entry.name = Some("My Backup".to_string());
+        
+        assert_eq!(entry.display_name(), "My Backup");
+    }
+
+    #[test]
+    fn test_command_history_new() {
+        let history = CommandHistory::new();
+        
+        assert!(history.entries.is_empty());
+        assert_eq!(history.max_entries, 100);
+    }
+
+    #[test]
+    fn test_command_history_add_entry() {
+        let mut history = CommandHistory::new();
+        let entry = create_test_entry("C:\\Source", "D:\\Dest");
+        let entry_id = entry.id;
+        
+        history.add_entry(entry);
+        
+        assert_eq!(history.entries.len(), 1);
+        assert_eq!(history.entries[0].id, entry_id);
+    }
+
+    #[test]
+    fn test_command_history_entries_inserted_at_front() {
+        let mut history = CommandHistory::new();
+        
+        let entry1 = create_test_entry("C:\\First", "D:\\First");
+        let entry2 = create_test_entry("C:\\Second", "D:\\Second");
+        
+        history.add_entry(entry1);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        history.add_entry(entry2);
+        
+        assert_eq!(history.entries.len(), 2);
+        // Most recent should be first
+        assert_eq!(history.entries[0].source, "C:\\Second");
+        assert_eq!(history.entries[1].source, "C:\\First");
+    }
+
+    #[test]
+    fn test_command_history_toggle_save() {
+        let mut history = CommandHistory::new();
+        let entry = create_test_entry("C:\\Source", "D:\\Dest");
+        let entry_id = entry.id;
+        
+        history.add_entry(entry);
+        assert!(!history.entries[0].saved);
+        
+        history.toggle_save(entry_id);
+        assert!(history.entries[0].saved);
+        
+        history.toggle_save(entry_id);
+        assert!(!history.entries[0].saved);
+    }
+
+    #[test]
+    fn test_command_history_set_name() {
+        let mut history = CommandHistory::new();
+        let entry = create_test_entry("C:\\Source", "D:\\Dest");
+        let entry_id = entry.id;
+        
+        history.add_entry(entry);
+        
+        history.set_name(entry_id, "My Custom Name".to_string());
+        assert_eq!(history.entries[0].name, Some("My Custom Name".to_string()));
+        
+        // Empty name should set to None
+        history.set_name(entry_id, "".to_string());
+        assert!(history.entries[0].name.is_none());
+    }
+
+    #[test]
+    fn test_command_history_delete_entry() {
+        let mut history = CommandHistory::new();
+        let entry1 = create_test_entry("C:\\First", "D:\\First");
+        let entry2 = create_test_entry("C:\\Second", "D:\\Second");
+        let entry1_id = entry1.id;
+        
+        history.add_entry(entry1);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        history.add_entry(entry2);
+        
+        assert_eq!(history.entries.len(), 2);
+        
+        history.delete_entry(entry1_id);
+        
+        assert_eq!(history.entries.len(), 1);
+        assert_eq!(history.entries[0].source, "C:\\Second");
+    }
+
+    #[test]
+    fn test_command_history_get_entry() {
+        let mut history = CommandHistory::new();
+        let entry = create_test_entry("C:\\Source", "D:\\Dest");
+        let entry_id = entry.id;
+        
+        history.add_entry(entry);
+        
+        let found = history.get_entry(entry_id);
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().source, "C:\\Source");
+        
+        let not_found = history.get_entry(99999);
+        assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_command_history_recent_entries() {
+        let mut history = CommandHistory::new();
+        
+        let mut entry1 = create_test_entry("C:\\Saved", "D:\\Saved");
+        entry1.saved = true;
+        
+        let entry2 = create_test_entry("C:\\Recent", "D:\\Recent");
+        
+        history.add_entry(entry1);
+        history.add_entry(entry2);
+        
+        let recent = history.recent_entries();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].source, "C:\\Recent");
+    }
+
+    #[test]
+    fn test_command_history_saved_entries() {
+        let mut history = CommandHistory::new();
+        
+        let mut entry1 = create_test_entry("C:\\Saved", "D:\\Saved");
+        entry1.saved = true;
+        
+        let entry2 = create_test_entry("C:\\Recent", "D:\\Recent");
+        
+        history.add_entry(entry1);
+        history.add_entry(entry2);
+        
+        let saved = history.saved_entries();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].source, "C:\\Saved");
+    }
+
+    #[test]
+    fn test_command_history_max_entries_respected() {
+        let mut history = CommandHistory::new();
+        history.max_entries = 3;
+        
+        for i in 0..5 {
+            let entry = create_test_entry(&format!("C:\\Source{}", i), &format!("D:\\Dest{}", i));
+            history.add_entry(entry);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        
+        // Should only keep max_entries unsaved entries
+        assert_eq!(history.entries.len(), 3);
+        
+        // Most recent should be preserved
+        assert_eq!(history.entries[0].source, "C:\\Source4");
+    }
+
+    #[test]
+    fn test_command_history_saved_entries_not_pruned() {
+        let mut history = CommandHistory::new();
+        history.max_entries = 2;
+        
+        // Add a saved entry
+        let mut saved = create_test_entry("C:\\Saved", "D:\\Saved");
+        saved.saved = true;
+        history.add_entry(saved);
+        
+        // Add more unsaved entries than max
+        for i in 0..3 {
+            let entry = create_test_entry(&format!("C:\\Source{}", i), &format!("D:\\Dest{}", i));
+            history.add_entry(entry);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        
+        // Saved entry should still exist + 2 most recent unsaved
+        let saved_count = history.entries.iter().filter(|e| e.saved).count();
+        let unsaved_count = history.entries.iter().filter(|e| !e.saved).count();
+        
+        assert_eq!(saved_count, 1);
+        assert!(unsaved_count <= 2);
+    }
+
+    #[test]
+    fn test_history_serialization() {
+        let mut history = CommandHistory::new();
+        let entry = create_test_entry("C:\\Source", "D:\\Dest");
+        history.add_entry(entry);
+        
+        // Serialize to JSON
+        let json = serde_json::to_string(&history).expect("Failed to serialize");
+        
+        // Deserialize back
+        let restored: CommandHistory = serde_json::from_str(&json).expect("Failed to deserialize");
+        
+        assert_eq!(restored.entries.len(), 1);
+        assert_eq!(restored.entries[0].source, "C:\\Source");
     }
 }
