@@ -16,13 +16,13 @@ Robo-AFT is a Windows GUI application that provides a user-friendly interface fo
 - **Preset Configurations** - Quick access to common copy scenarios:
   - Mirror with Full Metadata
   - Copy All & Preserve Attributes
-  - Move Files (Delete from Source)
   - Incremental Backup
   - Quick Copy
 - **SHA-256 Hash Verification** - Verify file integrity after copy operations
 - **Real-time Console Output** - Watch Robocopy progress live
 - **Command History** - Save and reuse frequently used configurations
 - **Log Export** - Save operation logs for auditing
+- **Destructive Option Guardrails** - Warnings and confirmation before destructive runs
 - **Material Design Dark Theme** - Easy on the eyes during long operations
 
 ## Requirements
@@ -85,7 +85,6 @@ The executable will be at `target/release/robo-aft.exe`
 
 - `/COPY:flags` - What to copy (D=Data, A=Attributes, T=Timestamps, S=Security)
 - `/MIR` - Mirror mode (sync source to destination)
-- `/MOV` - Move files (delete from source after copy)
 - `/PURGE` - Delete destination files not in source
 
 ### Performance
@@ -118,3 +117,8 @@ MIT License - See [LICENSE](LICENSE) for details.
 - Built with [egui](https://github.com/emilk/egui) and [eframe](https://github.com/emilk/egui/tree/master/crates/eframe)
 - File dialogs by [rfd](https://github.com/PolyMeilex/rfd)
 - Developed with assistance from GitHub Copilot (Claude)
+
+## Security Notes
+
+- This project uses `cargo audit` for dependency advisories; run `cargo audit` locally.
+- Current advisory status: `paste` is flagged as unmaintained (RUSTSEC-2024-0436) via transitive GUI dependencies. No known vulnerabilities are reported at this time.

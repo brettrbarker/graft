@@ -53,6 +53,8 @@ pub struct RoboAftApp {
     // State
     state: AppState,
     current_tab: MainTab,
+    show_destructive_warning: bool,
+    destructive_warning_text: String,
 
     // Hashing
     enable_hashing: bool,
@@ -91,6 +93,8 @@ impl RoboAftApp {
             log_entries: Vec::new(),
             state: AppState::Idle,
             current_tab: MainTab::Options,
+            show_destructive_warning: false,
+            destructive_warning_text: String::new(),
             enable_hashing: false,
             source_hashes: Vec::new(),
             dest_hashes: Vec::new(),
@@ -145,27 +149,27 @@ impl RoboAftApp {
         visuals.widgets.noninteractive.bg_fill = surface_container;
         visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, on_surface_variant);
         visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, surface_container_highest);
-        visuals.widgets.noninteractive.rounding = egui::Rounding::same(8.0);
+        visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(8);
         
         visuals.widgets.inactive.bg_fill = surface_container_high;
         visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, on_surface);
         visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, surface_container_highest);
-        visuals.widgets.inactive.rounding = egui::Rounding::same(8.0);
+        visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(8);
         
         visuals.widgets.hovered.bg_fill = surface_container_highest;
         visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.5, primary);
         visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, primary);
-        visuals.widgets.hovered.rounding = egui::Rounding::same(8.0);
+        visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(8);
         
         visuals.widgets.active.bg_fill = primary_container;
         visuals.widgets.active.fg_stroke = egui::Stroke::new(2.0, primary);
         visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, primary);
-        visuals.widgets.active.rounding = egui::Rounding::same(8.0);
+        visuals.widgets.active.corner_radius = egui::CornerRadius::same(8);
         
         visuals.widgets.open.bg_fill = surface_container_high;
         visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0, on_surface);
         visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, primary);
-        visuals.widgets.open.rounding = egui::Rounding::same(8.0);
+        visuals.widgets.open.corner_radius = egui::CornerRadius::same(8);
         
         // Selection colors
         visuals.selection.bg_fill = primary_container;
@@ -179,20 +183,20 @@ impl RoboAftApp {
         visuals.warn_fg_color = egui::Color32::from_rgb(255, 183, 77); // Orange warning
         
         // Window styling
-        visuals.window_rounding = egui::Rounding::same(12.0);
+        visuals.window_corner_radius = egui::CornerRadius::same(12);
         visuals.window_shadow = egui::Shadow {
-            offset: egui::vec2(0.0, 4.0),
-            blur: 16.0,
-            spread: 0.0,
+            offset: [0, 4],
+            blur: 16,
+            spread: 0,
             color: egui::Color32::from_black_alpha(80),
         };
         visuals.window_stroke = egui::Stroke::new(1.0, surface_container_highest);
         
         // Popup styling
         visuals.popup_shadow = egui::Shadow {
-            offset: egui::vec2(0.0, 2.0),
-            blur: 8.0,
-            spread: 0.0,
+            offset: [0, 2],
+            blur: 8,
+            spread: 0,
             color: egui::Color32::from_black_alpha(60),
         };
         
@@ -251,6 +255,43 @@ impl RoboAftApp {
 
     fn clear_console(&mut self) {
         self.console_output.clear();
+    }
+
+    fn destructive_option_labels(&self) -> Vec<&'static str> {
+        let mut labels = Vec::new();
+        if self.options.mirror.enabled {
+            labels.push("Mirror (/MIR)");
+        }
+        if self.options.purge.enabled {
+            labels.push("Purge (/PURGE)");
+        }
+        if self.options.move_files.enabled {
+            labels.push("Move files (/MOV)");
+        }
+        if self.options.move_files_dirs.enabled {
+            labels.push("Move files and dirs (/MOVE)");
+        }
+        labels
+    }
+
+    fn request_start_robocopy(&mut self) {
+        let destructive = self.destructive_option_labels();
+        if destructive.is_empty() {
+            self.start_robocopy();
+            return;
+        }
+
+        let mut warning = String::from(
+            "Destructive options are enabled. These options can delete or move files from the destination or source.\n\nEnabled:\n",
+        );
+        for label in destructive {
+            warning.push_str("- ");
+            warning.push_str(label);
+            warning.push('\n');
+        }
+        warning.push_str("\nReview your source/destination paths before continuing.");
+        self.destructive_warning_text = warning;
+        self.show_destructive_warning = true;
     }
 
     fn start_robocopy(&mut self) {
@@ -582,6 +623,8 @@ impl eframe::App for RoboAftApp {
             ctx.request_repaint();
         }
 
+        self.render_destructive_warning(ctx);
+
         // Top panel with paths
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.add_space(8.0);
@@ -646,7 +689,7 @@ impl eframe::App for RoboAftApp {
                         .add_enabled(can_run, egui::Button::new("▶ Run Robocopy"))
                         .clicked()
                     {
-                        self.start_robocopy();
+                        self.request_start_robocopy();
                     }
                 } else {
                     if ui.button("⏹ Stop").clicked() {
@@ -771,7 +814,6 @@ impl RoboAftApp {
                 PresetGroup::None,
                 PresetGroup::MirrorWithMetadata,
                 PresetGroup::CopyAllPreserve,
-                PresetGroup::MoveFiles,
                 PresetGroup::IncrementalBackup,
                 PresetGroup::QuickCopy,
             ];
@@ -802,6 +844,22 @@ impl RoboAftApp {
             ui.add_space(16.0);
             ui.separator();
             ui.add_space(8.0);
+
+            let destructive = self.destructive_option_labels();
+            if !destructive.is_empty() {
+                ui.label(
+                    egui::RichText::new("WARNING: Destructive options enabled")
+                        .color(egui::Color32::from_rgb(255, 120, 80))
+                        .strong(),
+                );
+                for label in destructive {
+                    ui.label(
+                        egui::RichText::new(format!("- {}", label))
+                            .color(egui::Color32::from_rgb(255, 120, 80)),
+                    );
+                }
+                ui.add_space(8.0);
+            }
 
             // Options in collapsible sections
             ui.columns(2, |columns| {
@@ -939,9 +997,9 @@ impl RoboAftApp {
         
         egui::Frame::default()
             .inner_margin(8.0)
-            .outer_margin(egui::Margin::symmetric(0.0, 4.0))
+            .outer_margin(egui::Margin::symmetric(0, 4))
             .fill(ui.style().visuals.extreme_bg_color)
-            .rounding(4.0)
+            .corner_radius(4)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     // Star/save button
@@ -1024,9 +1082,35 @@ impl RoboAftApp {
                             self.source_path = entry.source.clone();
                             self.destination_path = entry.destination.clone();
                             self.options = entry.options.clone();
-                            self.start_robocopy();
+                            self.request_start_robocopy();
                         }
                     });
+                });
+            });
+    }
+
+    fn render_destructive_warning(&mut self, ctx: &egui::Context) {
+        if !self.show_destructive_warning {
+            return;
+        }
+
+        egui::Window::new("Destructive Options Enabled")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(&self.destructive_warning_text);
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        self.show_destructive_warning = false;
+                    }
+                    if ui.button("Run anyway").clicked() {
+                        self.show_destructive_warning = false;
+                        if self.state == AppState::Idle {
+                            self.start_robocopy();
+                        }
+                    }
                 });
             });
     }

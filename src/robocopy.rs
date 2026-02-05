@@ -43,7 +43,6 @@ pub enum PresetGroup {
     None,
     MirrorWithMetadata,
     CopyAllPreserve,
-    MoveFiles,
     IncrementalBackup,
     QuickCopy,
 }
@@ -54,7 +53,6 @@ impl PresetGroup {
             PresetGroup::None => "Custom",
             PresetGroup::MirrorWithMetadata => "Mirror with Full Metadata",
             PresetGroup::CopyAllPreserve => "Copy All & Preserve Attributes",
-            PresetGroup::MoveFiles => "Move Files (Delete from Source)",
             PresetGroup::IncrementalBackup => "Incremental Backup",
             PresetGroup::QuickCopy => "Quick Copy (No Extras)",
         }
@@ -65,7 +63,6 @@ impl PresetGroup {
             PresetGroup::None => "Manually select options below",
             PresetGroup::MirrorWithMetadata => "Creates an exact mirror copy including all file attributes, timestamps, security, and auditing info. Deletes files in destination not in source.",
             PresetGroup::CopyAllPreserve => "Copies all files preserving all metadata (timestamps, attributes, security, owner info). Does not delete destination files.",
-            PresetGroup::MoveFiles => "Moves files from source to destination, deleting them from source after successful copy.",
             PresetGroup::IncrementalBackup => "Only copies new or changed files. Efficient for regular backups.",
             PresetGroup::QuickCopy => "Fast copy with minimal options. Good for simple file transfers.",
         }
@@ -220,17 +217,6 @@ impl RobocopyOptions {
                 self.retry_wait.value = "5".to_string();
                 self.multi_thread.enabled = true;
                 self.multi_thread.value = "8".to_string();
-            }
-            PresetGroup::MoveFiles => {
-                self.move_files_dirs.enabled = true;
-                self.copy_subdirs_empty.enabled = true;
-                // Use /COPY:DATS instead of /COPYALL to avoid requiring "Manage Auditing" privilege
-                self.copy_flags.enabled = true;
-                self.copy_flags.value = "DATS".to_string();
-                self.retry_count.enabled = true;
-                self.retry_count.value = "3".to_string();
-                self.retry_wait.enabled = true;
-                self.retry_wait.value = "5".to_string();
             }
             PresetGroup::IncrementalBackup => {
                 self.copy_subdirs_empty.enabled = true;
@@ -454,19 +440,6 @@ mod tests {
     }
 
     #[test]
-    fn test_move_files_preset() {
-        let mut options = RobocopyOptions::default();
-        options.apply_preset(PresetGroup::MoveFiles);
-        
-        assert!(options.move_files_dirs.enabled);
-        assert!(options.copy_subdirs_empty.enabled);
-        
-        let args = options.build_args("C:\\src", "C:\\dst");
-        assert!(args.contains(&"/MOVE".to_string()));
-        assert!(args.contains(&"/E".to_string()));
-    }
-
-    #[test]
     fn test_incremental_backup_preset() {
         let mut options = RobocopyOptions::default();
         options.apply_preset(PresetGroup::IncrementalBackup);
@@ -546,7 +519,6 @@ mod tests {
         assert_eq!(PresetGroup::None.name(), "Custom");
         assert_eq!(PresetGroup::MirrorWithMetadata.name(), "Mirror with Full Metadata");
         assert_eq!(PresetGroup::CopyAllPreserve.name(), "Copy All & Preserve Attributes");
-        assert_eq!(PresetGroup::MoveFiles.name(), "Move Files (Delete from Source)");
         assert_eq!(PresetGroup::IncrementalBackup.name(), "Incremental Backup");
         assert_eq!(PresetGroup::QuickCopy.name(), "Quick Copy (No Extras)");
     }
