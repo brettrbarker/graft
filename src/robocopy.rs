@@ -41,6 +41,7 @@ impl RobocopyOption {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PresetGroup {
     None,
+    LargeFilesWan,
     MirrorWithMetadata,
     CopyAllPreserve,
     IncrementalBackup,
@@ -51,6 +52,7 @@ impl PresetGroup {
     pub fn name(&self) -> &'static str {
         match self {
             PresetGroup::None => "Custom",
+            PresetGroup::LargeFilesWan => "Large Files over WAN",
             PresetGroup::MirrorWithMetadata => "Mirror with Full Metadata",
             PresetGroup::CopyAllPreserve => "Copy All & Preserve Attributes",
             PresetGroup::IncrementalBackup => "Incremental Backup",
@@ -61,6 +63,7 @@ impl PresetGroup {
     pub fn description(&self) -> &'static str {
         match self {
             PresetGroup::None => "Manually select options below",
+            PresetGroup::LargeFilesWan => "Optimized for copying large files over a WAN. Uses unbuffered I/O, conservative threading, and sensible retries.",
             PresetGroup::MirrorWithMetadata => "Creates an exact mirror copy including all file attributes, timestamps, security, and auditing info. Deletes files in destination not in source.",
             PresetGroup::CopyAllPreserve => "Copies all files preserving all metadata (timestamps, attributes, security, owner info). Does not delete destination files.",
             PresetGroup::IncrementalBackup => "Only copies new or changed files. Efficient for regular backups.",
@@ -191,6 +194,20 @@ impl RobocopyOptions {
 
         match preset {
             PresetGroup::None => {}
+            PresetGroup::LargeFilesWan => {
+                self.copy_subdirs_empty.enabled = true;
+                self.copy_flags.enabled = true;
+                self.copy_flags.value = "DAT".to_string();
+                self.dir_copy_flags.enabled = true;
+                self.dir_copy_flags.value = "DAT".to_string();
+                self.copy_unbuffered.enabled = true;
+                self.retry_count.enabled = true;
+                self.retry_count.value = "3".to_string();
+                self.retry_wait.enabled = true;
+                self.retry_wait.value = "5".to_string();
+                self.multi_thread.enabled = true;
+                self.multi_thread.value = "8".to_string();
+            }
             PresetGroup::MirrorWithMetadata => {
                 self.mirror.enabled = true;
                 // Use /COPY:DATS instead of /COPYALL to avoid requiring "Manage Auditing" privilege
@@ -515,8 +532,41 @@ mod tests {
     }
 
     #[test]
+    fn test_large_files_wan_preset() {
+        let mut options = RobocopyOptions::default();
+        options.apply_preset(PresetGroup::LargeFilesWan);
+
+        assert!(options.copy_subdirs_empty.enabled);
+        assert!(options.copy_flags.enabled);
+        assert_eq!(options.copy_flags.value, "DAT");
+        assert!(options.dir_copy_flags.enabled);
+        assert_eq!(options.dir_copy_flags.value, "DAT");
+        assert!(options.copy_unbuffered.enabled);
+        assert!(options.no_progress.enabled);
+        assert!(options.retry_count.enabled);
+        assert_eq!(options.retry_count.value, "3");
+        assert!(options.retry_wait.enabled);
+        assert_eq!(options.retry_wait.value, "5");
+        assert!(options.multi_thread.enabled);
+        assert_eq!(options.multi_thread.value, "8");
+        assert!(!options.copy_restartable.enabled, "/J and /Z are mutually exclusive");
+
+        let args = options.build_args("C:\\src", "C:\\dst");
+        assert!(args.contains(&"/E".to_string()));
+        assert!(args.contains(&"/COPY:DAT".to_string()));
+        assert!(args.contains(&"/DCOPY:DAT".to_string()));
+        assert!(args.contains(&"/J".to_string()));
+        assert!(args.contains(&"/NP".to_string()));
+        assert!(args.contains(&"/R:3".to_string()));
+        assert!(args.contains(&"/W:5".to_string()));
+        assert!(args.contains(&"/MT:8".to_string()));
+        assert!(!args.contains(&"/Z".to_string()));
+    }
+
+    #[test]
     fn test_preset_names() {
         assert_eq!(PresetGroup::None.name(), "Custom");
+        assert_eq!(PresetGroup::LargeFilesWan.name(), "Large Files over WAN");
         assert_eq!(PresetGroup::MirrorWithMetadata.name(), "Mirror with Full Metadata");
         assert_eq!(PresetGroup::CopyAllPreserve.name(), "Copy All & Preserve Attributes");
         assert_eq!(PresetGroup::IncrementalBackup.name(), "Incremental Backup");

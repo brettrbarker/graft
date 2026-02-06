@@ -5,7 +5,7 @@ mod hasher;
 mod history;
 mod robocopy;
 
-use app::RoboAftApp;
+use app::GraftApp;
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {
@@ -15,29 +15,31 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 900.0])
             .with_min_inner_size([1000.0, 700.0])
-            .with_title("Robo-AFT - Robocopy GUI Tool")
+            .with_title("GRAFT - Graphical Robocopy Assured File Transfer Tool")
             .with_icon(icon),
         ..Default::default()
     };
     
     eframe::run_native(
-        "Robo-AFT",
+        "Graft",
         options,
-        Box::new(|cc| Ok(Box::new(RoboAftApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(GraftApp::new(cc)))),
     )
 }
 
-/// Create the application icon (cursive R) for the window/taskbar
+/// Create the application icon (stylized G) for the window/taskbar
 fn create_icon() -> egui::IconData {
     let size = 64u32;
     let mut pixels = vec![0u8; (size * size * 4) as usize];
     
     // Colors (Material Design inspired)
     let bg_color = [0x1C, 0x1B, 0x1F, 0xFF];        // Dark surface
-    let r_color = [0x4F, 0xC3, 0xF7, 0xFF];         // Primary cyan/teal
+    let g_color = [0x4F, 0xC3, 0xF7, 0xFF];         // Primary cyan/teal
     let highlight = [0x80, 0xCB, 0xC4, 0xFF];       // Secondary teal
     
     let s = size as f32;
+    let center_x = s / 2.0;
+    let center_y = s / 2.0;
     
     // Fill background
     for y in 0..size {
@@ -47,9 +49,18 @@ fn create_icon() -> egui::IconData {
         }
     }
     
-    // Draw a stylized cursive "R"
+    // Draw a stylized "G"
     let stroke_width = s * 0.11;
-    let margin = s * 0.12;
+    let radius = s * 0.34;
+    
+    // Gap angle: the opening of the C faces right
+    let gap_start = -std::f32::consts::PI * 0.28;
+    let gap_end = std::f32::consts::PI * 0.28;
+    
+    // Crossbar parameters
+    let bar_y_center = center_y;
+    let bar_left = center_x - s * 0.02;
+    let bar_right = center_x + radius * gap_end.cos() + stroke_width * 0.5;
     
     for y in 0..size {
         for x in 0..size {
@@ -59,79 +70,42 @@ fn create_icon() -> egui::IconData {
             let mut draw = false;
             let mut use_highlight = false;
             
-            // Vertical stem (slightly curved for cursive feel)
-            let stem_x = margin + s * 0.1;
-            let curve_offset = ((fy - s / 2.0) / s).powi(2) * s * 0.05;
-            if (fx - (stem_x + curve_offset)).abs() < stroke_width 
-                && fy > margin && fy < s - margin {
-                draw = true;
-            }
-            
-            // Top loop (bowl) - elliptical arc
-            let loop_center_x = s * 0.5;
-            let loop_center_y = margin + s * 0.22;
-            let loop_rx = s * 0.30;
-            let loop_ry = s * 0.18;
-            
-            let dx = (fx - loop_center_x) / loop_rx;
-            let dy = (fy - loop_center_y) / loop_ry;
+            // Main arc of the G
+            let dx = fx - center_x;
+            let dy = fy - center_y;
             let dist = (dx * dx + dy * dy).sqrt();
             
-            if (dist - 1.0).abs() < stroke_width / loop_rx * 1.3 {
+            if (dist - radius).abs() < stroke_width {
                 let angle = dy.atan2(dx);
-                if angle > -std::f32::consts::PI * 0.85 && angle < std::f32::consts::PI * 0.45 {
+                // Draw the arc everywhere except the gap
+                if angle < gap_start || angle > gap_end {
                     draw = true;
-                    if angle > 0.0 && angle < std::f32::consts::PI * 0.3 {
+                    // Highlight the top portion
+                    if angle < -std::f32::consts::PI * 0.4 && angle > -std::f32::consts::PI * 0.9 {
                         use_highlight = true;
                     }
                 }
             }
             
-            // Diagonal leg
-            let leg_start_y = s * 0.5;
-            let leg_start_x = stem_x + stroke_width * 0.5;
-            
-            if fy > leg_start_y && fy < s - margin * 0.7 {
-                let progress = (fy - leg_start_y) / (s - margin - leg_start_y);
-                let target_x = leg_start_x + progress * (s - margin * 1.3 - leg_start_x);
-                let curve = (progress * std::f32::consts::PI).sin() * s * 0.025;
-                let leg_x = target_x + curve;
-                
-                if (fx - leg_x).abs() < stroke_width * (0.85 + progress * 0.35) {
-                    draw = true;
-                    if progress > 0.6 {
-                        use_highlight = true;
-                    }
-                }
+            // Horizontal crossbar
+            if (fy - bar_y_center).abs() < stroke_width
+                && fx >= bar_left && fx <= bar_right {
+                draw = true;
+                use_highlight = true;
             }
             
-            // Flourish at bottom of leg
-            let tail_center_x = s - margin * 1.1;
-            let tail_center_y = s - margin * 0.9;
-            let tail_r = s * 0.09;
-            let tail_dist = ((fx - tail_center_x).powi(2) + (fy - tail_center_y).powi(2)).sqrt();
-            if (tail_dist - tail_r).abs() < stroke_width * 0.55 {
-                let angle = (fy - tail_center_y).atan2(fx - tail_center_x);
-                if angle > std::f32::consts::PI * 0.15 && angle < std::f32::consts::PI * 1.15 {
-                    draw = true;
-                    use_highlight = true;
-                }
-            }
-            
-            // Entry flourish at top left
-            let entry_x = margin * 0.6;
-            let entry_y = margin * 1.4;
-            let entry_dist = ((fx - entry_x).powi(2) + (fy - entry_y).powi(2)).sqrt();
-            if entry_dist < s * 0.11 && entry_dist > s * 0.045 {
-                let angle = (fy - entry_y).atan2(fx - entry_x);
-                if angle > -std::f32::consts::PI * 0.25 && angle < std::f32::consts::PI * 0.65 {
-                    draw = true;
-                }
+            // Small vertical serif at the end of the top arc opening
+            let top_end_x = center_x + radius * gap_start.cos();
+            let top_end_y = center_y + radius * gap_start.sin();
+            let serif_len = stroke_width * 1.2;
+            if (fx - top_end_x).abs() < stroke_width
+                && fy >= top_end_y - serif_len * 0.3 && fy <= top_end_y + serif_len {
+                draw = true;
             }
             
             if draw {
                 let idx = ((y * size + x) * 4) as usize;
-                let color = if use_highlight { highlight } else { r_color };
+                let color = if use_highlight { highlight } else { g_color };
                 pixels[idx..idx+4].copy_from_slice(&color);
             }
         }

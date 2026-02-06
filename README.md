@@ -1,19 +1,20 @@
-# Robo-AFT
+# GRAFT
 
-**Robocopy GUI for Assured File Transfers**
+**GRAFT - Graphical Robocopy Assured File Transfer Tool**
 
 > **Note:** This application was developed with the assistance of AI (GitHub Copilot / Claude).
 
-![Robo-AFT Screenshot](docs/screenshot.png)
+![Graft Screenshot](docs/screenshot.png)
 
 ## Overview
 
-Robo-AFT is a Windows GUI application that provides a user-friendly interface for Microsoft's Robocopy command-line utility. It includes SHA-256 hash verification to ensure file integrity after transfers, making it ideal for critical data migrations and backups.
+Graft is a Windows GUI application that provides a user-friendly interface for Microsoft's Robocopy command-line utility. It includes SHA-256 hash verification to ensure file integrity after transfers, making it ideal for critical data migrations and backups.
 
 ## Features
 
 - **Intuitive GUI** - No need to memorize Robocopy command-line flags
 - **Preset Configurations** - Quick access to common copy scenarios:
+  - Large Files over WAN
   - Mirror with Full Metadata
   - Copy All & Preserve Attributes
   - Incremental Backup
@@ -33,7 +34,7 @@ Robo-AFT is a Windows GUI application that provides a user-friendly interface fo
 ## Installation
 
 1. Download the latest release from the [Releases](https://github.com/brettrbarker/robo-aft/releases) page
-2. Run `robo-aft.exe`
+2. Run `graft.exe`
 
 ## Building from Source
 
@@ -49,7 +50,7 @@ cd robo-aft
 cargo build --release
 ```
 
-The executable will be at `target/release/robo-aft.exe`
+The executable will be at `target/release/graft.exe`
 
 ## Usage
 

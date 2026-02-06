@@ -30,7 +30,7 @@ enum MainTab {
 }
 
 /// The main application struct
-pub struct RoboAftApp {
+pub struct GraftApp {
     // Paths
     source_path: String,
     destination_path: String,
@@ -76,7 +76,7 @@ pub struct RoboAftApp {
     hash_thread_dest: Option<JoinHandle<Result<Vec<FileHash>, String>>>,
 }
 
-impl RoboAftApp {
+impl GraftApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // Apply Material Design inspired dark theme
         Self::setup_custom_theme(&cc.egui_ctx);
@@ -95,7 +95,7 @@ impl RoboAftApp {
             current_tab: MainTab::Options,
             show_destructive_warning: false,
             destructive_warning_text: String::new(),
-            enable_hashing: false,
+            enable_hashing: true,
             source_hashes: Vec::new(),
             dest_hashes: Vec::new(),
             hash_verification: None,
@@ -588,7 +588,7 @@ impl RoboAftApp {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("Text files", &["txt"])
             .add_filter("Log files", &["log"])
-            .set_file_name("roboaft_log.txt")
+            .set_file_name("graft_log.txt")
             .save_file()
         {
             let mut content = self.log_entries.join("\n");
@@ -612,7 +612,7 @@ impl RoboAftApp {
     }
 }
 
-impl eframe::App for RoboAftApp {
+impl eframe::App for GraftApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Check async operations
         self.check_robocopy_done();
@@ -628,7 +628,7 @@ impl eframe::App for RoboAftApp {
         // Top panel with paths
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.add_space(8.0);
-            ui.heading("Robo-AFT - Robocopy GUI Tool");
+            ui.heading("GRAFT - Graphical Robocopy Assured File Transfer Tool");
             ui.add_space(8.0);
 
             // Source path row
@@ -699,7 +699,7 @@ impl eframe::App for RoboAftApp {
 
                 ui.separator();
 
-                ui.checkbox(&mut self.enable_hashing, "Verify with SHA-256 hashing");
+                ui.checkbox(&mut self.enable_hashing, "Verify with SHA-256 hashing (includes per-file summary in log)");
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     match self.state {
@@ -756,7 +756,7 @@ impl eframe::App for RoboAftApp {
         egui::SidePanel::right("console_panel")
             .resizable(true)
             .min_width(300.0)
-            .default_width(450.0)
+            .default_width(700.0)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.heading("Console Output");
@@ -803,7 +803,7 @@ impl eframe::App for RoboAftApp {
     }
 }
 
-impl RoboAftApp {
+impl GraftApp {
     fn render_options_tab(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             // Preset selection
@@ -812,6 +812,7 @@ impl RoboAftApp {
 
             let presets = [
                 PresetGroup::None,
+                PresetGroup::LargeFilesWan,
                 PresetGroup::MirrorWithMetadata,
                 PresetGroup::CopyAllPreserve,
                 PresetGroup::IncrementalBackup,

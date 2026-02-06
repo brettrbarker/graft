@@ -64,7 +64,7 @@ impl CommandHistory {
 
     /// Get the path to the history file
     fn get_history_path() -> Option<PathBuf> {
-        dirs::data_local_dir().map(|p| p.join("RoboAft").join("history.json"))
+        dirs::data_local_dir().map(|p| p.join("Graft").join("history.json"))
     }
 
     /// Load history from disk

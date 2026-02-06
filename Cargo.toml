@@ -1,8 +1,8 @@
 [package]
-name = "robo-aft"
+name = "graft"
 version = "1.0.0"
 edition = "2021"
-description = "A GUI tool for Robocopy on Windows 11 with hashing verification"
+description = "GRAFT - Graphical Robocopy Assured File Transfer Tool"
 authors = ["Brett Barker"]
 
 [dependencies]
@@ -39,5 +39,5 @@ strip = true
 winresource = "0.1"
 
 [[bin]]
-name = "robo-aft"
+name = "graft"
 path = "src/main.rs"

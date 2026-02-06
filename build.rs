@@ -18,8 +18,8 @@ fn main() {
     // Use winresource to embed the icon
     let mut res = winresource::WindowsResource::new();
     res.set_icon(icon_path.to_str().unwrap());
-    res.set("ProductName", "Robo-AFT");
-    res.set("FileDescription", "Robocopy GUI for Assured File Transfers");
+    res.set("ProductName", "GRAFT");
+    res.set("FileDescription", "Graphical Robocopy Assured File Transfer Tool");
     res.set("LegalCopyright", "Copyright © 2026 Brett Barker");
     
     if let Err(e) = res.compile() {
@@ -27,7 +27,7 @@ fn main() {
     }
 }
 
-/// Generate a 256x256 + 48x48 + 32x32 + 16x16 ICO file with a cursive "R" design
+/// Generate a 256x256 + 48x48 + 32x32 + 16x16 ICO file with a stylized "G" design
 fn generate_icon(path: &Path) {
     let mut file = File::create(path).expect("Failed to create icon file");
     
@@ -46,7 +46,7 @@ fn generate_icon(path: &Path) {
     let mut image_data: Vec<Vec<u8>> = Vec::new();
     
     for &size in &sizes {
-        let png_data = generate_png_r(size);
+        let png_data = generate_png_g(size);
         image_data.push(png_data);
     }
     
@@ -74,13 +74,13 @@ fn generate_icon(path: &Path) {
     }
 }
 
-/// Generate a PNG image with a cursive "R" design
-fn generate_png_r(size: u32) -> Vec<u8> {
+/// Generate a PNG image with a stylized "G" design
+fn generate_png_g(size: u32) -> Vec<u8> {
     let mut pixels = vec![0u8; (size * size * 4) as usize];
     
     // Colors (Material Design inspired)
     let bg_color = [0x1C, 0x1B, 0x1F, 0xFF];        // Dark surface
-    let r_color = [0x4F, 0xC3, 0xF7, 0xFF];         // Primary cyan/teal
+    let g_color = [0x4F, 0xC3, 0xF7, 0xFF];         // Primary cyan/teal
     let highlight = [0x80, 0xCB, 0xC4, 0xFF];       // Secondary teal
     
     let s = size as f32;
@@ -95,14 +95,22 @@ fn generate_png_r(size: u32) -> Vec<u8> {
         }
     }
     
-    // Draw a stylized cursive "R"
-    // The R consists of:
-    // 1. A vertical stem on the left
-    // 2. A curved top loop (the bowl of R)
-    // 3. A diagonal leg extending down-right
+    // Draw a stylized "G"
+    // The G consists of:
+    // 1. A large open arc (C-shape) — the main body
+    // 2. A horizontal crossbar extending inward from the right at mid-height
     
-    let stroke_width = s * 0.12;
-    let margin = s * 0.15;
+    let stroke_width = s * 0.11;
+    let radius = s * 0.34;
+    
+    // Gap angle: the opening of the C faces right, from about -45° to +45°
+    let gap_start = -std::f32::consts::PI * 0.28; // ~-50 degrees
+    let gap_end = std::f32::consts::PI * 0.28;     // ~+50 degrees
+    
+    // Crossbar parameters
+    let bar_y_center = center_y;
+    let bar_left = center_x - s * 0.02;  // extends slightly past center
+    let bar_right = center_x + radius * gap_end.cos() + stroke_width * 0.5;
     
     for y in 0..size {
         for x in 0..size {
@@ -112,81 +120,42 @@ fn generate_png_r(size: u32) -> Vec<u8> {
             let mut draw = false;
             let mut use_highlight = false;
             
-            // Vertical stem (slightly curved for cursive feel)
-            let stem_x = margin + s * 0.08;
-            let curve_offset = ((fy - center_y) / s).powi(2) * s * 0.05;
-            if (fx - (stem_x + curve_offset)).abs() < stroke_width 
-                && fy > margin && fy < s - margin {
-                draw = true;
-            }
-            
-            // Top loop (bowl) - elliptical arc
-            let loop_center_x = center_x * 0.95;
-            let loop_center_y = margin + s * 0.22;
-            let loop_rx = s * 0.28;
-            let loop_ry = s * 0.18;
-            
-            let dx = (fx - loop_center_x) / loop_rx;
-            let dy = (fy - loop_center_y) / loop_ry;
+            // Main arc of the G
+            let dx = fx - center_x;
+            let dy = fy - center_y;
             let dist = (dx * dx + dy * dy).sqrt();
             
-            // Only draw the right portion of the ellipse (from top around to middle)
-            if (dist - 1.0).abs() < stroke_width / loop_rx * 1.2 {
+            if (dist - radius).abs() < stroke_width {
                 let angle = dy.atan2(dx);
-                if angle > -std::f32::consts::PI * 0.9 && angle < std::f32::consts::PI * 0.4 {
+                // Draw the arc everywhere except the gap (opening on the right)
+                if angle < gap_start || angle > gap_end {
                     draw = true;
-                    if angle > 0.0 && angle < std::f32::consts::PI * 0.3 {
+                    // Highlight the top portion of the arc
+                    if angle < -std::f32::consts::PI * 0.4 && angle > -std::f32::consts::PI * 0.9 {
                         use_highlight = true;
                     }
                 }
             }
             
-            // Diagonal leg - starts from middle of stem, goes down-right with a curve
-            let leg_start_y = center_y * 1.05;
-            let leg_start_x = stem_x + stroke_width * 0.5;
-            
-            if fy > leg_start_y && fy < s - margin * 0.8 {
-                let progress = (fy - leg_start_y) / (s - margin - leg_start_y);
-                let target_x = leg_start_x + progress * (s - margin * 1.5 - leg_start_x);
-                // Add a slight S-curve to the leg
-                let curve = (progress * std::f32::consts::PI).sin() * s * 0.03;
-                let leg_x = target_x + curve;
-                
-                if (fx - leg_x).abs() < stroke_width * (0.9 + progress * 0.3) {
-                    draw = true;
-                    if progress > 0.6 {
-                        use_highlight = true;
-                    }
-                }
+            // Horizontal crossbar (the tongue of the G)
+            if (fy - bar_y_center).abs() < stroke_width
+                && fx >= bar_left && fx <= bar_right {
+                draw = true;
+                use_highlight = true;
             }
             
-            // Flourish at bottom of leg (cursive tail)
-            let tail_center_x = s - margin * 1.3;
-            let tail_center_y = s - margin * 1.1;
-            let tail_r = s * 0.08;
-            let tail_dist = ((fx - tail_center_x).powi(2) + (fy - tail_center_y).powi(2)).sqrt();
-            if (tail_dist - tail_r).abs() < stroke_width * 0.6 {
-                let angle = (fy - tail_center_y).atan2(fx - tail_center_x);
-                if angle > std::f32::consts::PI * 0.2 && angle < std::f32::consts::PI * 1.2 {
-                    draw = true;
-                    use_highlight = true;
-                }
-            }
-            
-            // Small flourish at the top left (entry stroke for cursive)
-            let entry_x = margin * 0.7;
-            let entry_y = margin * 1.5;
-            let entry_dist = ((fx - entry_x).powi(2) + (fy - entry_y).powi(2)).sqrt();
-            if entry_dist < s * 0.12 && entry_dist > s * 0.05 {
-                let angle = (fy - entry_y).atan2(fx - entry_x);
-                if angle > -std::f32::consts::PI * 0.3 && angle < std::f32::consts::PI * 0.7 {
-                    draw = true;
-                }
+            // Small vertical serif at the end of the top arc opening
+            let top_end_x = center_x + radius * gap_start.cos();
+            let top_end_y = center_y + radius * gap_start.sin();
+            let serif_len = stroke_width * 1.2;
+            if (fx - top_end_x).abs() < stroke_width
+                && fy >= top_end_y - serif_len * 0.3 && fy <= top_end_y + serif_len {
+                draw = true;
             }
             
             if draw {
                 let idx = ((y * size + x) * 4) as usize;
-                let color = if use_highlight { highlight } else { r_color };
+                let color = if use_highlight { highlight } else { g_color };
                 pixels[idx..idx+4].copy_from_slice(&color);
             }
         }
@@ -197,13 +166,12 @@ fn generate_png_r(size: u32) -> Vec<u8> {
     for y in 1..(size-1) {
         for x in 1..(size-1) {
             let idx = ((y * size + x) * 4) as usize;
-            let is_edge = pixels[idx+3] != pixels[((y * size + x + 1) * 4) as usize + 3]
-                || pixels[idx+3] != pixels[((y * size + x - 1) * 4) as usize + 3]
-                || pixels[idx+3] != pixels[(((y+1) * size + x) * 4) as usize + 3]
-                || pixels[idx+3] != pixels[(((y-1) * size + x) * 4) as usize + 3];
+            let is_edge = pixels[idx] != pixels[((y * size + x + 1) * 4) as usize]
+                || pixels[idx] != pixels[((y * size + x - 1) * 4) as usize]
+                || pixels[idx] != pixels[(((y+1) * size + x) * 4) as usize]
+                || pixels[idx] != pixels[(((y-1) * size + x) * 4) as usize];
             
             if is_edge {
-                // Simple 3x3 average for anti-aliasing
                 for c in 0..3 {
                     let mut sum = 0u32;
                     for dy in -1i32..=1 {

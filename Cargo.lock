@@ -1418,6 +1418,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "graft"
+version = "1.0.0"
+dependencies = [
+ "chrono",
+ "dirs",
+ "eframe",
+ "egui",
+ "hex",
+ "rfd",
+ "serde",
+ "serde_json",
+ "sha2",
+ "walkdir",
+ "winresource",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2543,23 +2560,6 @@ dependencies = [
  "wayland-protocols",
  "web-sys",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "robo-aft"
-version = "1.0.0"
-dependencies = [
- "chrono",
- "dirs",
- "eframe",
- "egui",
- "hex",
- "rfd",
- "serde",
- "serde_json",
- "sha2",
- "walkdir",
- "winresource",
 ]
 
 [[package]]

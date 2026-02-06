@@ -1,0 +1,43 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo lock file (uncomment if this is a library crate)
+# Cargo.lock
+
+# Build outputs
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Rust incremental compilation
+**/*.rustc
+*.rlib
+*.rmeta
+
+# Editor/IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Backup files
+*.bak
+*.tmp
+*.temp
+
+# Log files
+*.log
+
+# User-specific data (history file location)
+# Uncomment if you don't want to track user history
+# %LOCALAPPDATA%/Graft/history.json
