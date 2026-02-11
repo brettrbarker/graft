@@ -1,0 +1,11 @@
+# This configuration file is for cargo-deny
+# https://embarkstudios.github.io/cargo-deny/
+
+# Note: This configuration focuses on checking for security vulnerabilities
+# via the advisories check. Other checks are minimal.
+
+[advisories]
+# The url(s) of the advisory databases to use
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# A list of advisory IDs to ignore
+ignore = []
