@@ -1,0 +1,20 @@
+name: Cargo Deny
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  cargo-deny:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Cargo Deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          # Check advisories (vulnerabilities)
+          command: check advisories
