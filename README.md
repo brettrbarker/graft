@@ -23,6 +23,8 @@ Graft is a Windows GUI application that provides a user-friendly interface for M
 - **Real-time Console Output** - Watch Robocopy progress live
 - **Command History** - Save and reuse frequently used configurations
 - **Log Export** - Save operation logs for auditing
+- **Transfer Statistics** - Summary of files/dirs copied, skipped, failed, and extras
+- **Menu Bar** - File menu (Export Log, Exit) and Help menu (About with version info)
 - **Destructive Option Guardrails** - Warnings and confirmation before destructive runs
 - **Material Design Dark Theme** - Easy on the eyes during long operations
 
@@ -33,7 +35,7 @@ Graft is a Windows GUI application that provides a user-friendly interface for M
 
 ## Installation
 
-1. Download the latest release from the [Releases](https://github.com/brettrbarker/robo-aft/releases) page
+1. Download the latest release from the [Releases](https://github.com/brettrbarker/graft/releases) page
 2. Run `graft.exe`
 
 ## Building from Source
@@ -45,8 +47,8 @@ Graft is a Windows GUI application that provides a user-friendly interface for M
 ### Build
 
 ```powershell
-git clone https://github.com/brettrbarker/robo-aft.git
-cd robo-aft
+git clone https://github.com/brettrbarker/graft.git
+cd graft
 cargo build --release
 ```
 
@@ -97,7 +99,7 @@ The executable will be at `target/release/graft.exe`
 ## Project Structure
 
 ```text
-robo-aft/
+graft/
 ├── Cargo.toml          # Rust dependencies and metadata
 ├── build.rs            # Build script for Windows icon
 ├── README.md           # This file
