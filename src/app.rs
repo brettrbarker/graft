@@ -1,8 +1,8 @@
 //! Main application GUI module
 
 use crate::hasher::{
-    compare_hashes, format_hash_results, format_verification_results, hash_directory, FileHash,
-    HashProgress, HashVerification,
+    format_hash_results, hash_directory, FileHash,
+    HashProgress,
 };
 use crate::history::{CommandHistory, HistoryEntry};
 use crate::robocopy::{PresetGroup, RobocopyOption, RobocopyOptions};
@@ -30,6 +30,27 @@ enum MainTab {
 }
 
 /// The main application struct
+/// Transfer statistics parsed from robocopy output
+#[derive(Default, Clone, Debug)]
+struct TransferStats {
+    files_total: u64,
+    files_copied: u64,
+    files_skipped: u64,
+    files_mismatch: u64,
+    files_failed: u64,
+    files_extras: u64,
+    dirs_total: u64,
+    dirs_copied: u64,
+    dirs_skipped: u64,
+    dirs_failed: u64,
+    dirs_extras: u64,
+    bytes_total: String,
+    bytes_copied: String,
+    bytes_failed: String,
+    speed: String,
+    robocopy_exit_code: i32,
+}
+
 pub struct GraftApp {
     // Paths
     source_path: String,
@@ -55,15 +76,20 @@ pub struct GraftApp {
     current_tab: MainTab,
     show_destructive_warning: bool,
     destructive_warning_text: String,
+    show_about: bool,
 
     // Hashing
     enable_hashing: bool,
     source_hashes: Vec<FileHash>,
-    dest_hashes: Vec<FileHash>,
-    hash_verification: Option<HashVerification>,
     hash_progress_text: String,
     hash_files_processed: usize,
     hash_files_total: usize,
+
+    // AFT Ticket
+    aft_ticket_number: String,
+
+    // Transfer statistics
+    transfer_stats: TransferStats,
 
     // Channels for async operations
     console_rx: Option<Receiver<String>>,
@@ -73,7 +99,6 @@ pub struct GraftApp {
     robocopy_child: Option<Child>,
     output_thread: Option<JoinHandle<()>>,
     hash_thread_source: Option<JoinHandle<Result<Vec<FileHash>, String>>>,
-    hash_thread_dest: Option<JoinHandle<Result<Vec<FileHash>, String>>>,
 }
 
 impl GraftApp {
@@ -95,19 +120,19 @@ impl GraftApp {
             current_tab: MainTab::Options,
             show_destructive_warning: false,
             destructive_warning_text: String::new(),
+            show_about: false,
             enable_hashing: true,
             source_hashes: Vec::new(),
-            dest_hashes: Vec::new(),
-            hash_verification: None,
             hash_progress_text: String::new(),
             hash_files_processed: 0,
             hash_files_total: 0,
+            aft_ticket_number: String::new(),
+            transfer_stats: TransferStats::default(),
             console_rx: None,
             hash_progress_rx: None,
             robocopy_child: None,
             output_thread: None,
             hash_thread_source: None,
-            hash_thread_dest: None,
         }
     }
 
@@ -301,6 +326,7 @@ impl GraftApp {
         }
 
         let command = self.options.build_command_string(&self.source_path, &self.destination_path);
+        self.log_entries.clear(); // Clear log for new transfer
         self.log(&format!("Starting: {}", command));
         self.clear_console();
         self.add_console_line(format!(">>> {}", command));
@@ -367,6 +393,99 @@ impl GraftApp {
         }
     }
 
+    /// Parse robocopy summary statistics from console output.
+    /// Robocopy prints a summary table at the end like:
+    ///                Total    Copied   Skipped  Mismatch    FAILED    Extras
+    ///    Dirs :         5         3         2         0         0         0
+    ///   Files :        10         8         2         0         0         0
+    ///   Bytes :   1.234 m   1.001 m   233.0 k         0         0         0
+    ///   Speed :           1234567 Bytes/sec.
+    fn parse_robocopy_stats(&mut self) {
+        self.transfer_stats = TransferStats::default();
+
+        // Search console output from the end for the summary lines
+        for line in self.console_output.iter().rev().take(30) {
+            let trimmed = line.trim();
+            if trimmed.starts_with("Dirs :") || trimmed.starts_with("Dirs:") {
+                let nums = Self::parse_stat_line(trimmed);
+                if nums.len() >= 6 {
+                    self.transfer_stats.dirs_total = nums[0];
+                    self.transfer_stats.dirs_copied = nums[1];
+                    self.transfer_stats.dirs_skipped = nums[2];
+                    // index 3 = mismatch (not tracked for dirs)
+                    self.transfer_stats.dirs_failed = nums[4];
+                    self.transfer_stats.dirs_extras = nums[5];
+                }
+            } else if trimmed.starts_with("Files :") || trimmed.starts_with("Files:") {
+                let nums = Self::parse_stat_line(trimmed);
+                if nums.len() >= 6 {
+                    self.transfer_stats.files_total = nums[0];
+                    self.transfer_stats.files_copied = nums[1];
+                    self.transfer_stats.files_skipped = nums[2];
+                    self.transfer_stats.files_mismatch = nums[3];
+                    self.transfer_stats.files_failed = nums[4];
+                    self.transfer_stats.files_extras = nums[5];
+                }
+            } else if trimmed.starts_with("Bytes :") || trimmed.starts_with("Bytes:") {
+                // Bytes line may have human-readable values like "1.234 m"
+                let after_colon = trimmed.splitn(2, ':').nth(1).unwrap_or("").trim();
+                let parts: Vec<&str> = after_colon.split_whitespace().collect();
+                // Parse byte groups: each may be a number or "number unit"
+                self.transfer_stats.bytes_total = Self::extract_byte_value(&parts, 0);
+                self.transfer_stats.bytes_copied = Self::extract_byte_value(&parts, 1);
+                self.transfer_stats.bytes_failed = Self::extract_byte_value(&parts, 4);
+            } else if trimmed.starts_with("Speed :") || trimmed.starts_with("Speed:") {
+                let after_colon = trimmed.splitn(2, ':').nth(1).unwrap_or("").trim();
+                self.transfer_stats.speed = after_colon.to_string();
+            }
+        }
+    }
+
+    /// Parse numeric values from a robocopy stat line (after the colon)
+    fn parse_stat_line(line: &str) -> Vec<u64> {
+        let after_colon = line.splitn(2, ':').nth(1).unwrap_or("");
+        after_colon
+            .split_whitespace()
+            .filter_map(|s| s.replace(',', "").parse::<u64>().ok())
+            .collect()
+    }
+
+    /// Extract a human-readable byte value from robocopy output parts.
+    /// Values can be plain numbers or "1.234 m", "500 k", etc.
+    fn extract_byte_value(parts: &[&str], index: usize) -> String {
+        // Robocopy byte values: either a plain number or a number followed by a size suffix
+        // Since the split is whitespace-based, we try to find the Nth numeric token
+        // and check if the next token is a size suffix
+        let mut count = 0usize;
+        let mut i = 0;
+        while i < parts.len() {
+            // Check if this token looks like a number (starts with digit or has decimal)
+            let is_num = parts[i].replace(',', "").parse::<f64>().is_ok();
+            if is_num {
+                if count == index {
+                    // Check if next token is a size suffix
+                    if i + 1 < parts.len() {
+                        let next = parts[i + 1].to_lowercase();
+                        if ["k", "m", "g", "t"].contains(&next.as_str()) {
+                            return format!("{} {}", parts[i], parts[i + 1]);
+                        }
+                    }
+                    return parts[i].to_string();
+                }
+                count += 1;
+                // Skip size suffix if present
+                if i + 1 < parts.len() {
+                    let next = parts[i + 1].to_lowercase();
+                    if ["k", "m", "g", "t"].contains(&next.as_str()) {
+                        i += 1;
+                    }
+                }
+            }
+            i += 1;
+        }
+        String::new()
+    }
+
     fn check_robocopy_done(&mut self) {
         if self.state != AppState::Running {
             return;
@@ -391,6 +510,7 @@ impl GraftApp {
                     match child.wait() {
                         Ok(status) => {
                             let exit_code = status.code().unwrap_or(-1);
+                            self.transfer_stats.robocopy_exit_code = exit_code;
                             self.add_console_line(String::new());
                             self.add_console_line(format!(
                                 ">>> Robocopy finished with exit code: {}",
@@ -417,6 +537,23 @@ impl GraftApp {
                             };
                             self.add_console_line(format!(">>> {}", message));
                             self.log(message);
+
+                            // Parse robocopy summary statistics from console output
+                            self.parse_robocopy_stats();
+                            self.log(&format!("Files - Total: {}, Copied: {}, Skipped: {}, Failed: {}, Extras: {}",
+                                self.transfer_stats.files_total,
+                                self.transfer_stats.files_copied,
+                                self.transfer_stats.files_skipped,
+                                self.transfer_stats.files_failed,
+                                self.transfer_stats.files_extras,
+                            ));
+                            self.log(&format!("Dirs  - Total: {}, Copied: {}, Skipped: {}, Failed: {}, Extras: {}",
+                                self.transfer_stats.dirs_total,
+                                self.transfer_stats.dirs_copied,
+                                self.transfer_stats.dirs_skipped,
+                                self.transfer_stats.dirs_failed,
+                                self.transfer_stats.dirs_extras,
+                            ));
                         }
                         Err(e) => {
                             self.log(&format!("Error waiting for process: {}", e));
@@ -428,18 +565,13 @@ impl GraftApp {
                 self.output_thread = None;
 
                 // Start hashing if enabled and robocopy succeeded (exit code < 8)
-                // Get the last exit code from the log
-                let last_exit_code = self.log_entries.iter().rev()
-                    .find(|s| s.contains("exit code:"))
-                    .and_then(|s| s.split("exit code:").last())
-                    .and_then(|s| s.trim().parse::<i32>().ok())
-                    .unwrap_or(0);
+                let last_exit_code = self.transfer_stats.robocopy_exit_code;
                 
                 if self.enable_hashing && last_exit_code < 8 {
                     self.start_hashing();
                 } else if self.enable_hashing && last_exit_code >= 8 {
-                    self.log("Skipping hash verification due to robocopy errors");
-                    self.add_console_line(">>> Skipping hash verification due to robocopy errors".to_string());
+                    self.log("Skipping source file hashing due to robocopy errors");
+                    self.add_console_line(">>> Skipping source file hashing due to robocopy errors".to_string());
                     self.state = AppState::Idle;
                 } else {
                     self.state = AppState::Idle;
@@ -451,13 +583,11 @@ impl GraftApp {
     }
 
     fn start_hashing(&mut self) {
-        self.log("Starting hash verification...");
+        self.log("Starting source file hashing...");
         self.add_console_line(String::new());
-        self.add_console_line(">>> Starting hash verification...".to_string());
+        self.add_console_line(">>> Starting source file hashing...".to_string());
 
         self.source_hashes.clear();
-        self.dest_hashes.clear();
-        self.hash_verification = None;
         self.hash_progress_text = "Initializing...".to_string();
         self.hash_files_processed = 0;
         self.hash_files_total = 0;
@@ -465,14 +595,9 @@ impl GraftApp {
         let (tx, rx) = mpsc::channel::<HashProgress>();
         self.hash_progress_rx = Some(rx);
 
-        // Start hashing source
+        // Start hashing source only
         let source_path = PathBuf::from(&self.source_path);
-        let tx_source = tx.clone();
-        self.hash_thread_source = Some(hash_directory(&source_path, tx_source));
-
-        // Start hashing destination
-        let dest_path = PathBuf::from(&self.destination_path);
-        self.hash_thread_dest = Some(hash_directory(&dest_path, tx));
+        self.hash_thread_source = Some(hash_directory(&source_path, tx));
 
         self.state = AppState::Hashing;
     }
@@ -498,14 +623,13 @@ impl GraftApp {
             match progress {
                 HashProgress::Starting(total) => {
                     self.hash_files_total += total;
-                    self.hash_progress_text = format!("Hashing {} files...", self.hash_files_total);
+                    self.hash_progress_text = format!("Hashing {} source files...", self.hash_files_total);
                 }
                 HashProgress::FileStarted(path) => {
                     self.hash_progress_text = format!("Hashing: {}", path);
                 }
                 HashProgress::FileComplete(file_hash) => {
                     self.hash_files_processed += 1;
-                    // Log detailed hash info
                     self.add_console_line(format!(
                         "  Hashed: {} ({} bytes)",
                         file_hash.relative_path,
@@ -513,20 +637,11 @@ impl GraftApp {
                     ));
                 }
                 HashProgress::Complete(hashes) => {
-                    // Store hashes - first complete is source, second is dest
-                    if self.source_hashes.is_empty() {
-                        self.source_hashes = hashes;
-                        self.add_console_line(format!(
-                            ">>> Source hashing complete: {} files",
-                            self.source_hashes.len()
-                        ));
-                    } else {
-                        self.dest_hashes = hashes;
-                        self.add_console_line(format!(
-                            ">>> Destination hashing complete: {} files",
-                            self.dest_hashes.len()
-                        ));
-                    }
+                    self.source_hashes = hashes;
+                    self.add_console_line(format!(
+                        ">>> Source hashing complete: {} files",
+                        self.source_hashes.len()
+                    ));
                 }
                 HashProgress::Error(e) => {
                     self.log(&format!("Hash error: {}", e));
@@ -535,39 +650,28 @@ impl GraftApp {
             }
         }
 
-        // Check if both threads are done
+        // Check if source thread is done
         let source_done = self
             .hash_thread_source
             .as_ref()
             .map(|h| h.is_finished())
             .unwrap_or(true);
-        let dest_done = self
-            .hash_thread_dest
-            .as_ref()
-            .map(|h| h.is_finished())
-            .unwrap_or(true);
 
-        if source_done && dest_done && !self.source_hashes.is_empty() && !self.dest_hashes.is_empty() {
-            // Compare hashes
-            let verification = compare_hashes(&self.source_hashes, &self.dest_hashes);
-            
-            let report = format_verification_results(&verification);
-            for line in report.lines() {
-                self.add_console_line(line.to_string());
-                self.log_entries.push(line.to_string());
+        if source_done && !self.source_hashes.is_empty() {
+            // Collect summary lines first to avoid borrow conflict
+            let summary_lines: Vec<String> = self.source_hashes.iter()
+                .map(|fh| format!("  {} | SHA-256: {} | {} bytes", fh.relative_path, fh.hash, fh.size))
+                .collect();
+            let count = self.source_hashes.len();
+
+            self.add_console_line(String::new());
+            self.add_console_line(">>> Source File Hash Summary:".to_string());
+            for line in summary_lines {
+                self.add_console_line(line);
             }
+            self.log(&format!("Source file hashing complete: {} files hashed", count));
 
-            if verification.is_successful() {
-                self.log("Hash verification PASSED - All files match");
-                self.add_console_line(">>> Hash verification PASSED - All files match".to_string());
-            } else {
-                self.log("Hash verification FAILED - Some files do not match");
-                self.add_console_line(">>> Hash verification FAILED - Some files do not match".to_string());
-            }
-
-            self.hash_verification = Some(verification);
             self.hash_thread_source = None;
-            self.hash_thread_dest = None;
             self.hash_progress_rx = None;
             self.state = AppState::Idle;
         }
@@ -585,25 +689,73 @@ impl GraftApp {
     }
 
     fn export_log(&self) {
+        // Build default filename: graft_YYYY-MM-DD[_TICKET].txt
+        let date_str = Local::now().format("%Y-%m-%d").to_string();
+        let default_filename = if !self.aft_ticket_number.is_empty() {
+            let sanitized_ticket = self.aft_ticket_number.trim().replace(' ', "_");
+            format!("graft_{}_{}.txt", date_str, sanitized_ticket)
+        } else {
+            format!("graft_{}.txt", date_str)
+        };
+
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("Text files", &["txt"])
             .add_filter("Log files", &["log"])
-            .set_file_name("graft_log.txt")
+            .set_file_name(&default_filename)
             .save_file()
         {
-            let mut content = self.log_entries.join("\n");
-            
-            // Append detailed hash information if available
+            let mut content = String::new();
+            let stats = &self.transfer_stats;
+
+            // === Transfer Summary (top of log) ===
+            content.push_str("=== TRANSFER SUMMARY ===\n");
+            content.push_str(&format!("Date: {}\n", Local::now().format("%Y-%m-%d %H:%M:%S")));
+            if !self.aft_ticket_number.is_empty() {
+                content.push_str(&format!("AFT Ticket Number: {}\n", self.aft_ticket_number));
+            }
+            content.push_str(&format!("Source: {}\n", self.source_path));
+            content.push_str(&format!("Destination: {}\n", self.destination_path));
+            content.push_str(&format!("Command: {}\n", self.options.build_command_string(&self.source_path, &self.destination_path)));
+            content.push_str(&format!("Robocopy Exit Code: {}\n", stats.robocopy_exit_code));
+            content.push('\n');
+
+            // === Transfer Statistics ===
+            content.push_str("=== TRANSFER STATISTICS ===\n");
+            content.push_str(&format!("Total Files:      {}\n", stats.files_total));
+            content.push_str(&format!("Files Copied:     {}\n", stats.files_copied));
+            content.push_str(&format!("Files Skipped:    {}\n", stats.files_skipped));
+            content.push_str(&format!("Files Mismatched: {}\n", stats.files_mismatch));
+            content.push_str(&format!("Files FAILED:     {}\n", stats.files_failed));
+            content.push_str(&format!("Files Extras:     {}\n", stats.files_extras));
+            content.push('\n');
+            content.push_str(&format!("Total Dirs:       {}\n", stats.dirs_total));
+            content.push_str(&format!("Dirs Copied:      {}\n", stats.dirs_copied));
+            content.push_str(&format!("Dirs Skipped:     {}\n", stats.dirs_skipped));
+            content.push_str(&format!("Dirs FAILED:      {}\n", stats.dirs_failed));
+            content.push_str(&format!("Dirs Extras:      {}\n", stats.dirs_extras));
+            content.push('\n');
+            if !stats.bytes_total.is_empty() {
+                content.push_str(&format!("Total Bytes:      {}\n", stats.bytes_total));
+                content.push_str(&format!("Bytes Copied:     {}\n", stats.bytes_copied));
+                if !stats.bytes_failed.is_empty() {
+                    content.push_str(&format!("Bytes FAILED:     {}\n", stats.bytes_failed));
+                }
+            }
+            if !stats.speed.is_empty() {
+                content.push_str(&format!("Transfer Speed:   {}\n", stats.speed));
+            }
+            content.push('\n');
+
+            // Source file hash summary
             if !self.source_hashes.is_empty() {
-                content.push_str("\n\n");
                 content.push_str("=== SOURCE FILE HASHES ===\n");
                 content.push_str(&format_hash_results(&self.source_hashes));
+                content.push('\n');
             }
-            if !self.dest_hashes.is_empty() {
-                content.push_str("\n\n");
-                content.push_str("=== DESTINATION FILE HASHES ===\n");
-                content.push_str(&format_hash_results(&self.dest_hashes));
-            }
+
+            content.push_str("=== DETAILED LOG ===\n");
+            content.push_str(&self.log_entries.join("\n"));
+            content.push('\n');
             
             if let Err(e) = std::fs::write(&path, content) {
                 eprintln!("Failed to save log: {}", e);
@@ -624,6 +776,29 @@ impl eframe::App for GraftApp {
         }
 
         self.render_destructive_warning(ctx);
+        self.render_about_dialog(ctx);
+
+        // Menu bar
+        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("Export Log...").clicked() {
+                        self.export_log();
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("Exit").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+                ui.menu_button("Help", |ui| {
+                    if ui.button("About").clicked() {
+                        self.show_about = true;
+                        ui.close();
+                    }
+                });
+            });
+        });
 
         // Top panel with paths
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
@@ -663,6 +838,18 @@ impl eframe::App for GraftApp {
                 );
             });
 
+            ui.add_space(4.0);
+
+            // AFT Ticket Number row
+            ui.horizontal(|ui| {
+                ui.label("AFT Ticket:    ");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.aft_ticket_number)
+                        .desired_width(120.0)
+                        .hint_text("e.g. TT1234"),
+                );
+            });
+
             ui.add_space(8.0);
 
             // Command preview
@@ -699,7 +886,7 @@ impl eframe::App for GraftApp {
 
                 ui.separator();
 
-                ui.checkbox(&mut self.enable_hashing, "Verify with SHA-256 hashing (includes per-file summary in log)");
+                ui.checkbox(&mut self.enable_hashing, "Include Source File Hash (SHA-256)");
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     match self.state {
@@ -1112,6 +1299,31 @@ impl GraftApp {
                             self.start_robocopy();
                         }
                     }
+                });
+            });
+    }
+
+    fn render_about_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_about {
+            return;
+        }
+
+        egui::Window::new("About GRAFT")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(8.0);
+                    ui.heading("GRAFT");
+                    ui.label("Graphical Robocopy Assured File Transfer Tool");
+                    ui.add_space(4.0);
+                    ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+                    ui.add_space(12.0);
+                    if ui.button("OK").clicked() {
+                        self.show_about = false;
+                    }
+                    ui.add_space(4.0);
                 });
             });
     }
