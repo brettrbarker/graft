@@ -21,6 +21,7 @@ pub struct FileHash {
 
 /// Result of comparing source and destination hashes
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct HashVerification {
     pub matched: Vec<(String, String)>,       // (relative_path, hash)
     pub mismatched: Vec<(String, String, String)>, // (relative_path, source_hash, dest_hash)
@@ -28,6 +29,7 @@ pub struct HashVerification {
     pub extra_in_dest: Vec<String>,
 }
 
+#[allow(dead_code)]
 impl HashVerification {
     pub fn is_successful(&self) -> bool {
         self.mismatched.is_empty() && self.missing_in_dest.is_empty()
@@ -156,6 +158,7 @@ pub fn hash_directory(
 }
 
 /// Compare source and destination hashes
+#[allow(dead_code)]
 pub fn compare_hashes(source_hashes: &[FileHash], dest_hashes: &[FileHash]) -> HashVerification {
     let source_map: HashMap<&str, &FileHash> = source_hashes
         .iter()
@@ -221,6 +224,7 @@ pub fn format_hash_results(hashes: &[FileHash]) -> String {
 }
 
 /// Format verification results for logging
+#[allow(dead_code)]
 pub fn format_verification_results(verification: &HashVerification) -> String {
     let mut output = String::new();
     output.push_str("Hash Verification Report\n");
