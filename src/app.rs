@@ -738,7 +738,7 @@ impl GraftApp {
         content.push_str(&format!("Date: {}\n", Local::now().format("%Y-%m-%d %H:%M:%S")));
         
         // Add username
-        if let Some(username) = std::env::var("USERNAME").or_else(|_| std::env::var("USER")).ok() {
+        if let Some(username) = HistoryEntry::get_username() {
             content.push_str(&format!("Username: {}\n", username));
         }
         
@@ -810,9 +810,13 @@ impl GraftApp {
                 match entry.save_log_to_disk() {
                     Ok(path) => {
                         self.log(&format!("Log saved to: {}", path.display()));
+                        self.add_console_line(format!(">>> Log saved to: {}", path.display()));
                     }
                     Err(e) => {
-                        eprintln!("Failed to auto-save log: {}", e);
+                        let error_msg = format!("Failed to auto-save log: {}", e);
+                        self.log(&error_msg);
+                        self.add_console_line(format!(">>> {}", error_msg));
+                        eprintln!("{}", error_msg);
                     }
                 }
             }

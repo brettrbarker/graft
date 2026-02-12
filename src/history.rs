@@ -43,7 +43,7 @@ impl HistoryEntry {
     }
 
     /// Get the current system username
-    fn get_username() -> Option<String> {
+    pub fn get_username() -> Option<String> {
         std::env::var("USERNAME")
             .or_else(|_| std::env::var("USER"))
             .ok()
