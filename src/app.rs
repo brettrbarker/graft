@@ -106,11 +106,24 @@ impl GraftApp {
         // Apply Material Design inspired dark theme
         Self::setup_custom_theme(&cc.egui_ctx);
         
+        let history = CommandHistory::load();
+        
+        // Load last config if available
+        let (source_path, destination_path, options) = if let Some(last_config) = history.get_last_config() {
+            (
+                last_config.source.clone(),
+                last_config.destination.clone(),
+                last_config.options.clone(),
+            )
+        } else {
+            (String::new(), String::new(), RobocopyOptions::default())
+        };
+        
         Self {
-            source_path: String::new(),
-            destination_path: String::new(),
-            options: RobocopyOptions::default(),
-            history: CommandHistory::load(),
+            source_path,
+            destination_path,
+            options,
+            history,
             selected_history_id: None,
             rename_buffer: String::new(),
             console_output: Vec::new(),
@@ -327,6 +340,7 @@ impl GraftApp {
 
         let command = self.options.build_command_string(&self.source_path, &self.destination_path);
         self.log_entries.clear(); // Clear log for new transfer
+        self.log(&format!("Preset: {}", self.options.current_preset.name()));
         self.log(&format!("Starting: {}", command));
         self.clear_console();
         self.add_console_line(format!(">>> {}", command));
@@ -340,6 +354,13 @@ impl GraftApp {
             self.options.clone(),
         );
         self.history.add_entry(entry);
+        
+        // Save last config for next session
+        self.history.save_last_config(
+            self.source_path.clone(),
+            self.destination_path.clone(),
+            self.options.clone(),
+        );
         let _ = self.history.save();
 
         // Build args
@@ -998,12 +1019,12 @@ impl GraftApp {
             ui.add_space(4.0);
 
             let presets = [
-                PresetGroup::None,
                 PresetGroup::LargeFilesWan,
                 PresetGroup::MirrorWithMetadata,
                 PresetGroup::CopyAllPreserve,
                 PresetGroup::IncrementalBackup,
                 PresetGroup::QuickCopy,
+                PresetGroup::None,
             ];
 
             let current_preset = self.options.current_preset.clone();
@@ -1119,6 +1140,11 @@ impl GraftApp {
                     Self::render_option_checkbox_static(ui, &mut self.options.inter_packet_gap);
                 });
             });
+            
+            // Check if options have been manually changed
+            if self.options.current_preset != PresetGroup::None && !self.options.matches_current_preset() {
+                self.options.current_preset = PresetGroup::None;
+            }
         });
     }
 

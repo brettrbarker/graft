@@ -52,6 +52,15 @@ impl HistoryEntry {
 pub struct CommandHistory {
     pub entries: Vec<HistoryEntry>,
     pub max_entries: usize,
+    pub last_config: Option<LastConfig>,
+}
+
+/// Last used configuration
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LastConfig {
+    pub source: String,
+    pub destination: String,
+    pub options: RobocopyOptions,
 }
 
 impl CommandHistory {
@@ -59,6 +68,7 @@ impl CommandHistory {
         Self {
             entries: Vec::new(),
             max_entries: 100,
+            last_config: None,
         }
     }
 
@@ -142,6 +152,26 @@ impl CommandHistory {
     /// Delete an entry
     pub fn delete_entry(&mut self, id: u64) {
         self.entries.retain(|e| e.id != id);
+    }
+
+    /// Save the last used configuration
+    /// 
+    /// Stores the source path, destination path, and options for the last command
+    /// that was executed. This will be loaded automatically on next application start.
+    pub fn save_last_config(&mut self, source: String, destination: String, options: RobocopyOptions) {
+        self.last_config = Some(LastConfig {
+            source,
+            destination,
+            options,
+        });
+    }
+
+    /// Get the last used configuration
+    /// 
+    /// Returns the last saved configuration if available, or None if no configuration
+    /// has been saved yet. This is used to restore the last command on application startup.
+    pub fn get_last_config(&self) -> Option<&LastConfig> {
+        self.last_config.as_ref()
     }
 
     /// Get entry by ID
@@ -267,8 +297,9 @@ mod tests {
     fn test_command_history_delete_entry() {
         let mut history = CommandHistory::new();
         let entry1 = create_test_entry("C:\\First", "D:\\First");
-        let entry2 = create_test_entry("C:\\Second", "D:\\Second");
         let entry1_id = entry1.id;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let entry2 = create_test_entry("C:\\Second", "D:\\Second");
         
         history.add_entry(entry1);
         std::thread::sleep(std::time::Duration::from_millis(5));
