@@ -63,6 +63,7 @@ pub struct GraftApp {
     history: CommandHistory,
     selected_history_id: Option<u64>,
     rename_buffer: String,
+    current_entry_id: Option<u64>,
 
     // Console output
     console_output: Vec<String>,
@@ -113,6 +114,7 @@ impl GraftApp {
             history: CommandHistory::load(),
             selected_history_id: None,
             rename_buffer: String::new(),
+            current_entry_id: None,
             console_output: Vec::new(),
             console_scroll_to_bottom: false,
             log_entries: Vec::new(),
@@ -333,14 +335,22 @@ impl GraftApp {
         self.add_console_line(String::new());
 
         // Save to history
-        let entry = HistoryEntry::new(
+        let mut entry = HistoryEntry::new(
             self.source_path.clone(),
             self.destination_path.clone(),
             command.clone(),
             self.options.clone(),
         );
+        // Store ticket number if present
+        if !self.aft_ticket_number.is_empty() {
+            entry.ticket_number = Some(self.aft_ticket_number.clone());
+        }
+        let entry_id = entry.id;
         self.history.add_entry(entry);
         let _ = self.history.save();
+        
+        // Track current entry for log saving
+        self.current_entry_id = Some(entry_id);
 
         // Build args
         let args = self.options.build_args(&self.source_path, &self.destination_path);
@@ -572,8 +582,10 @@ impl GraftApp {
                 } else if self.enable_hashing && last_exit_code >= 8 {
                     self.log("Skipping source file hashing due to robocopy errors");
                     self.add_console_line(">>> Skipping source file hashing due to robocopy errors".to_string());
+                    self.save_log_to_history();
                     self.state = AppState::Idle;
                 } else {
+                    self.save_log_to_history();
                     self.state = AppState::Idle;
                 }
                 return;
@@ -673,6 +685,10 @@ impl GraftApp {
 
             self.hash_thread_source = None;
             self.hash_progress_rx = None;
+            
+            // Save log to history after hashing is complete
+            self.save_log_to_history();
+            
             self.state = AppState::Idle;
         }
     }
@@ -704,62 +720,105 @@ impl GraftApp {
             .set_file_name(&default_filename)
             .save_file()
         {
-            let mut content = String::new();
-            let stats = &self.transfer_stats;
-
-            // === Transfer Summary (top of log) ===
-            content.push_str("=== TRANSFER SUMMARY ===\n");
-            content.push_str(&format!("Date: {}\n", Local::now().format("%Y-%m-%d %H:%M:%S")));
-            if !self.aft_ticket_number.is_empty() {
-                content.push_str(&format!("AFT Ticket Number: {}\n", self.aft_ticket_number));
-            }
-            content.push_str(&format!("Source: {}\n", self.source_path));
-            content.push_str(&format!("Destination: {}\n", self.destination_path));
-            content.push_str(&format!("Command: {}\n", self.options.build_command_string(&self.source_path, &self.destination_path)));
-            content.push_str(&format!("Robocopy Exit Code: {}\n", stats.robocopy_exit_code));
-            content.push('\n');
-
-            // === Transfer Statistics ===
-            content.push_str("=== TRANSFER STATISTICS ===\n");
-            content.push_str(&format!("Total Files:      {}\n", stats.files_total));
-            content.push_str(&format!("Files Copied:     {}\n", stats.files_copied));
-            content.push_str(&format!("Files Skipped:    {}\n", stats.files_skipped));
-            content.push_str(&format!("Files Mismatched: {}\n", stats.files_mismatch));
-            content.push_str(&format!("Files FAILED:     {}\n", stats.files_failed));
-            content.push_str(&format!("Files Extras:     {}\n", stats.files_extras));
-            content.push('\n');
-            content.push_str(&format!("Total Dirs:       {}\n", stats.dirs_total));
-            content.push_str(&format!("Dirs Copied:      {}\n", stats.dirs_copied));
-            content.push_str(&format!("Dirs Skipped:     {}\n", stats.dirs_skipped));
-            content.push_str(&format!("Dirs FAILED:      {}\n", stats.dirs_failed));
-            content.push_str(&format!("Dirs Extras:      {}\n", stats.dirs_extras));
-            content.push('\n');
-            if !stats.bytes_total.is_empty() {
-                content.push_str(&format!("Total Bytes:      {}\n", stats.bytes_total));
-                content.push_str(&format!("Bytes Copied:     {}\n", stats.bytes_copied));
-                if !stats.bytes_failed.is_empty() {
-                    content.push_str(&format!("Bytes FAILED:     {}\n", stats.bytes_failed));
-                }
-            }
-            if !stats.speed.is_empty() {
-                content.push_str(&format!("Transfer Speed:   {}\n", stats.speed));
-            }
-            content.push('\n');
-
-            // Source file hash summary
-            if !self.source_hashes.is_empty() {
-                content.push_str("=== SOURCE FILE HASHES ===\n");
-                content.push_str(&format_hash_results(&self.source_hashes));
-                content.push('\n');
-            }
-
-            content.push_str("=== DETAILED LOG ===\n");
-            content.push_str(&self.log_entries.join("\n"));
-            content.push('\n');
+            let content = self.build_log_content();
             
             if let Err(e) = std::fs::write(&path, content) {
                 eprintln!("Failed to save log: {}", e);
             }
+        }
+    }
+
+    /// Build the log content from current transfer data
+    fn build_log_content(&self) -> String {
+        let mut content = String::new();
+        let stats = &self.transfer_stats;
+
+        // === Transfer Summary (top of log) ===
+        content.push_str("=== TRANSFER SUMMARY ===\n");
+        content.push_str(&format!("Date: {}\n", Local::now().format("%Y-%m-%d %H:%M:%S")));
+        
+        // Add username
+        if let Some(username) = std::env::var("USERNAME").or_else(|_| std::env::var("USER")).ok() {
+            content.push_str(&format!("Username: {}\n", username));
+        }
+        
+        if !self.aft_ticket_number.is_empty() {
+            content.push_str(&format!("AFT Ticket Number: {}\n", self.aft_ticket_number));
+        }
+        content.push_str(&format!("Source: {}\n", self.source_path));
+        content.push_str(&format!("Destination: {}\n", self.destination_path));
+        content.push_str(&format!("Command: {}\n", self.options.build_command_string(&self.source_path, &self.destination_path)));
+        content.push_str(&format!("Robocopy Exit Code: {}\n", stats.robocopy_exit_code));
+        content.push('\n');
+
+        // === Transfer Statistics ===
+        content.push_str("=== TRANSFER STATISTICS ===\n");
+        content.push_str(&format!("Total Files:      {}\n", stats.files_total));
+        content.push_str(&format!("Files Copied:     {}\n", stats.files_copied));
+        content.push_str(&format!("Files Skipped:    {}\n", stats.files_skipped));
+        content.push_str(&format!("Files Mismatched: {}\n", stats.files_mismatch));
+        content.push_str(&format!("Files FAILED:     {}\n", stats.files_failed));
+        content.push_str(&format!("Files Extras:     {}\n", stats.files_extras));
+        content.push('\n');
+        content.push_str(&format!("Total Dirs:       {}\n", stats.dirs_total));
+        content.push_str(&format!("Dirs Copied:      {}\n", stats.dirs_copied));
+        content.push_str(&format!("Dirs Skipped:     {}\n", stats.dirs_skipped));
+        content.push_str(&format!("Dirs FAILED:      {}\n", stats.dirs_failed));
+        content.push_str(&format!("Dirs Extras:      {}\n", stats.dirs_extras));
+        content.push('\n');
+        if !stats.bytes_total.is_empty() {
+            content.push_str(&format!("Total Bytes:      {}\n", stats.bytes_total));
+            content.push_str(&format!("Bytes Copied:     {}\n", stats.bytes_copied));
+            if !stats.bytes_failed.is_empty() {
+                content.push_str(&format!("Bytes FAILED:     {}\n", stats.bytes_failed));
+            }
+        }
+        if !stats.speed.is_empty() {
+            content.push_str(&format!("Transfer Speed:   {}\n", stats.speed));
+        }
+        content.push('\n');
+
+        // Source file hash summary
+        if !self.source_hashes.is_empty() {
+            content.push_str("=== SOURCE FILE HASHES ===\n");
+            content.push_str(&format_hash_results(&self.source_hashes));
+            content.push('\n');
+        }
+
+        content.push_str("=== DETAILED LOG ===\n");
+        content.push_str(&self.log_entries.join("\n"));
+        content.push('\n');
+        
+        content
+    }
+
+    /// Save the current log to the history entry and automatically to disk
+    fn save_log_to_history(&mut self) {
+        if let Some(entry_id) = self.current_entry_id {
+            let log_content = self.build_log_content();
+            
+            // Update history entry with log content
+            let ticket = if !self.aft_ticket_number.is_empty() {
+                Some(self.aft_ticket_number.clone())
+            } else {
+                None
+            };
+            self.history.set_log_content(entry_id, log_content.clone(), ticket);
+            
+            // Get the entry and save log to disk
+            if let Some(entry) = self.history.get_entry_mut(entry_id) {
+                match entry.save_log_to_disk() {
+                    Ok(path) => {
+                        self.log(&format!("Log saved to: {}", path.display()));
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to auto-save log: {}", e);
+                    }
+                }
+            }
+            
+            // Save updated history
+            let _ = self.history.save();
         }
     }
 }
@@ -1249,6 +1308,13 @@ impl GraftApp {
                             let _ = self.history.save();
                         }
                         
+                        // Export Log button (only if log content exists)
+                        if entry.log_content.is_some() {
+                            if ui.button("📄").on_hover_text("Export Log").clicked() {
+                                self.export_history_log(entry);
+                            }
+                        }
+                        
                         // Rename button
                         if ui.button("✏").on_hover_text("Rename").clicked() {
                             self.selected_history_id = Some(id);
@@ -1275,6 +1341,24 @@ impl GraftApp {
                     });
                 });
             });
+    }
+
+    /// Export a log from a history entry
+    fn export_history_log(&self, entry: &HistoryEntry) {
+        if let Some(ref log_content) = entry.log_content {
+            let default_filename = entry.generate_log_filename();
+            
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Text files", &["txt"])
+                .add_filter("Log files", &["log"])
+                .set_file_name(&default_filename)
+                .save_file()
+            {
+                if let Err(e) = std::fs::write(&path, log_content) {
+                    eprintln!("Failed to export log: {}", e);
+                }
+            }
+        }
     }
 
     fn render_destructive_warning(&mut self, ctx: &egui::Context) {

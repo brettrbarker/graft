@@ -17,6 +17,12 @@ pub struct HistoryEntry {
     pub options: RobocopyOptions,
     pub saved: bool,
     pub name: Option<String>,
+    #[serde(default)]
+    pub log_content: Option<String>,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub ticket_number: Option<String>,
 }
 
 impl HistoryEntry {
@@ -30,21 +36,70 @@ impl HistoryEntry {
             options,
             saved: false,
             name: None,
+            log_content: None,
+            username: Self::get_username(),
+            ticket_number: None,
         }
+    }
+
+    /// Get the current system username
+    fn get_username() -> Option<String> {
+        std::env::var("USERNAME")
+            .or_else(|_| std::env::var("USER"))
+            .ok()
     }
 
     pub fn display_name(&self) -> String {
         if let Some(ref name) = self.name {
             name.clone()
         } else {
+            let ticket_info = self.ticket_number.as_ref()
+                .map(|t| format!(" [{}]", t))
+                .unwrap_or_default();
             format!(
-                "{} → {} ({})",
+                "{} → {}{} ({})",
                 self.source,
                 self.destination,
+                ticket_info,
                 self.timestamp.format("%Y-%m-%d %H:%M")
             )
         }
     }
+
+    /// Get the path to the logs directory
+    pub fn get_log_directory() -> Option<PathBuf> {
+        dirs::data_local_dir().map(|p| p.join("Graft").join("logs"))
+    }
+
+    /// Generate a log filename for this entry
+    pub fn generate_log_filename(&self) -> String {
+        let timestamp = self.timestamp.format("%Y-%m-%d_%H-%M-%S");
+        if let Some(ref ticket) = self.ticket_number {
+            let sanitized_ticket = ticket.trim().replace(' ', "_");
+            format!("graft_{}_{}.log", timestamp, sanitized_ticket)
+        } else {
+            format!("graft_{}.log", timestamp)
+        }
+    }
+
+    /// Save the log content to disk
+    pub fn save_log_to_disk(&self) -> Result<PathBuf, String> {
+        if let Some(ref log_content) = self.log_content {
+            if let Some(log_dir) = Self::get_log_directory() {
+                // Create directory if it doesn't exist
+                fs::create_dir_all(&log_dir)
+                    .map_err(|e| format!("Failed to create log directory: {}", e))?;
+
+                let log_path = log_dir.join(self.generate_log_filename());
+                fs::write(&log_path, log_content)
+                    .map_err(|e| format!("Failed to write log file: {}", e))?;
+                
+                return Ok(log_path);
+            }
+        }
+        Err("No log content to save".to_string())
+    }
+
 }
 
 /// Command history storage
@@ -137,6 +192,19 @@ impl CommandHistory {
         if let Some(entry) = self.entries.iter_mut().find(|e| e.id == id) {
             entry.name = if name.is_empty() { None } else { Some(name) };
         }
+    }
+
+    /// Update the log content and ticket number for an entry
+    pub fn set_log_content(&mut self, id: u64, log_content: String, ticket_number: Option<String>) {
+        if let Some(entry) = self.entries.iter_mut().find(|e| e.id == id) {
+            entry.log_content = Some(log_content);
+            entry.ticket_number = ticket_number;
+        }
+    }
+
+    /// Get mutable entry by ID
+    pub fn get_entry_mut(&mut self, id: u64) -> Option<&mut HistoryEntry> {
+        self.entries.iter_mut().find(|e| e.id == id)
     }
 
     /// Delete an entry
