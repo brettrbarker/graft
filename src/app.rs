@@ -798,12 +798,8 @@ impl GraftApp {
             let log_content = self.build_log_content();
             
             // Update history entry with log content
-            let ticket = if !self.aft_ticket_number.is_empty() {
-                Some(self.aft_ticket_number.clone())
-            } else {
-                None
-            };
-            self.history.set_log_content(entry_id, log_content.clone(), ticket);
+            let ticket = (!self.aft_ticket_number.is_empty()).then(|| self.aft_ticket_number.clone());
+            self.history.set_log_content(entry_id, log_content, ticket);
             
             // Get the entry and save log to disk
             if let Some(entry) = self.history.get_entry_mut(entry_id) {

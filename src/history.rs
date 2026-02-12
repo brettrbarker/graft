@@ -54,8 +54,7 @@ impl HistoryEntry {
             name.clone()
         } else {
             let ticket_info = self.ticket_number.as_ref()
-                .map(|t| format!(" [{}]", t))
-                .unwrap_or_default();
+                .map_or(String::new(), |t| format!(" [{}]", t));
             format!(
                 "{} → {}{} ({})",
                 self.source,
