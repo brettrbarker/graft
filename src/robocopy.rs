@@ -130,6 +130,68 @@ pub struct RobocopyOptions {
 
 impl Default for RobocopyOptions {
     fn default() -> Self {
+        let mut opts = Self {
+            // Copy options
+            copy_subdirs: RobocopyOption::new("/S", "Copy Subdirectories", "Copy subdirectories, excluding empty ones"),
+            copy_subdirs_empty: RobocopyOption::new("/E", "Copy Empty Subdirs", "Copy subdirectories, including empty ones"),
+            copy_levels: RobocopyOption::with_value("/LEV:", "Copy Levels", "Only copy the top N levels of the source directory tree", ""),
+            copy_restartable: RobocopyOption::new("/Z", "Restartable Mode", "Copy files in restartable mode (survive network glitch)"),
+            copy_backup: RobocopyOption::new("/B", "Backup Mode", "Copy files in backup mode (requires backup privileges)"),
+            copy_unbuffered: RobocopyOption::new("/J", "Unbuffered I/O", "Copy using unbuffered I/O (recommended for large files)"),
+
+            // File selection
+            copy_all: RobocopyOption::new("/COPYALL", "Copy All Attributes", "Copy ALL file info (equivalent to /COPY:DATSOU)"),
+            copy_flags: RobocopyOption::with_value("/COPY:", "Copy Flags", "What to COPY: D=Data, A=Attribs, T=Timestamps, S=Security, O=Owner, U=aUditing", "DAT"),
+            dir_copy_flags: RobocopyOption::with_value("/DCOPY:", "Dir Copy Flags", "What to COPY for directories: D=Data, A=Attribs, T=Timestamps", "DA"),
+            sec_copy: RobocopyOption::new("/SEC", "Copy Security", "Copy files with SECurity (equivalent to /COPY:DATS)"),
+            copy_timestamps: RobocopyOption::new("/TIMFIX", "Fix Timestamps", "Fix file TIMes on all files, even skipped files"),
+            purge: RobocopyOption::new("/PURGE", "Purge Destination", "Delete destination files/directories that no longer exist in source"),
+            mirror: RobocopyOption::new("/MIR", "Mirror Mode", "Mirror a directory tree (equivalent to /E plus /PURGE)"),
+            move_files: RobocopyOption::new("/MOV", "Move Files", "Move files (delete from source after copying)"),
+            move_files_dirs: RobocopyOption::new("/MOVE", "Move Files & Dirs", "Move files and directories (delete from source after copying)"),
+
+            // Attributes
+            attr_add: RobocopyOption::with_value("/A+:", "Add Attributes", "Add the given attributes to copied files (R,A,S,H,C,N,E,T)", ""),
+            attr_remove: RobocopyOption::with_value("/A-:", "Remove Attributes", "Remove the given attributes from copied files", ""),
+            create_tree: RobocopyOption::new("/CREATE", "Create Tree Only", "Create directory tree and zero-length files only"),
+
+            // Retry options
+            retry_count: RobocopyOption::with_value("/R:", "Retry Count", "Number of retries on failed copies (default 1 million)", "3"),
+            retry_wait: RobocopyOption::with_value("/W:", "Retry Wait", "Wait time between retries in seconds (default 30)", "5"),
+
+            // Logging options
+            log_verbose: RobocopyOption::new("/V", "Verbose Output", "Produce verbose output, showing skipped files"),
+            log_timestamps: RobocopyOption::new("/TS", "Include Timestamps", "Include source file timestamps in the output"),
+            log_full_path: RobocopyOption::new("/FP", "Full Pathnames", "Include full pathname of files in the output"),
+            log_bytes: RobocopyOption::new("/BYTES", "Show Bytes", "Print sizes as bytes"),
+            no_progress: RobocopyOption::new("/NP", "No Progress", "No progress - don't display percentage copied"),
+            log_eta: RobocopyOption::new("/ETA", "Show ETA", "Show estimated time of arrival of copied files"),
+
+            // File filter options
+            exclude_changed: RobocopyOption::new("/XC", "Exclude Changed", "Exclude changed files"),
+            exclude_newer: RobocopyOption::new("/XN", "Exclude Newer", "Exclude newer files"),
+            exclude_older: RobocopyOption::new("/XO", "Exclude Older", "Exclude older files"),
+            exclude_extra: RobocopyOption::new("/XX", "Exclude Extra", "Exclude extra files and directories (in destination, not in source)"),
+            exclude_lonely: RobocopyOption::new("/XL", "Exclude Lonely", "Exclude lonely files and directories (in source, not in destination)"),
+            include_same: RobocopyOption::new("/IS", "Include Same", "Include same files (overwrite even if identical)"),
+            include_modified: RobocopyOption::new("/IT", "Include Tweaked", "Include tweaked files (same size, different timestamp)"),
+
+            // Performance
+            multi_thread: RobocopyOption::with_value("/MT:", "Multi-threaded", "Multi-threaded copy with N threads (default 8, max 128)", "8"),
+            inter_packet_gap: RobocopyOption::with_value("/IPG:", "Inter-Packet Gap", "Inter-packet gap in milliseconds (for bandwidth throttling)", ""),
+
+            current_preset: PresetGroup::LargeFilesWan,
+        };
+        
+        // Apply the default preset
+        opts.apply_preset(PresetGroup::LargeFilesWan);
+        opts
+    }
+}
+
+impl RobocopyOptions {
+    /// Create a new RobocopyOptions without applying any preset
+    pub fn new_empty() -> Self {
         Self {
             // Copy options
             copy_subdirs: RobocopyOption::new("/S", "Copy Subdirectories", "Copy subdirectories, excluding empty ones"),
@@ -183,9 +245,7 @@ impl Default for RobocopyOptions {
             current_preset: PresetGroup::None,
         }
     }
-}
 
-impl RobocopyOptions {
     /// Apply a preset configuration
     pub fn apply_preset(&mut self, preset: PresetGroup) {
         // Reset all options first
@@ -201,6 +261,7 @@ impl RobocopyOptions {
                 self.dir_copy_flags.enabled = true;
                 self.dir_copy_flags.value = "DAT".to_string();
                 self.copy_unbuffered.enabled = true;
+                self.no_progress.enabled = true;
                 self.retry_count.enabled = true;
                 self.retry_count.value = "3".to_string();
                 self.retry_wait.enabled = true;
@@ -259,9 +320,78 @@ impl RobocopyOptions {
         }
     }
 
+    /// Check if current options match the current preset
+    pub fn matches_current_preset(&self) -> bool {
+        if self.current_preset == PresetGroup::None {
+            return true; // Custom always matches itself
+        }
+
+        // Create a temporary options object with the preset applied
+        let mut temp = Self::new_empty();
+        temp.apply_preset(self.current_preset.clone());
+
+        // Compare all relevant option states
+        self.options_equal(&temp)
+    }
+
+    /// Helper to check if two RobocopyOptions have the same enabled options and values
+    fn options_equal(&self, other: &Self) -> bool {
+        // Compare all options
+        self.copy_subdirs.enabled == other.copy_subdirs.enabled &&
+        self.copy_subdirs_empty.enabled == other.copy_subdirs_empty.enabled &&
+        self.copy_levels.enabled == other.copy_levels.enabled &&
+        self.copy_levels.value == other.copy_levels.value &&
+        self.copy_restartable.enabled == other.copy_restartable.enabled &&
+        self.copy_backup.enabled == other.copy_backup.enabled &&
+        self.copy_unbuffered.enabled == other.copy_unbuffered.enabled &&
+        
+        self.copy_all.enabled == other.copy_all.enabled &&
+        self.copy_flags.enabled == other.copy_flags.enabled &&
+        self.copy_flags.value == other.copy_flags.value &&
+        self.dir_copy_flags.enabled == other.dir_copy_flags.enabled &&
+        self.dir_copy_flags.value == other.dir_copy_flags.value &&
+        self.sec_copy.enabled == other.sec_copy.enabled &&
+        self.copy_timestamps.enabled == other.copy_timestamps.enabled &&
+        self.purge.enabled == other.purge.enabled &&
+        self.mirror.enabled == other.mirror.enabled &&
+        self.move_files.enabled == other.move_files.enabled &&
+        self.move_files_dirs.enabled == other.move_files_dirs.enabled &&
+        
+        self.attr_add.enabled == other.attr_add.enabled &&
+        self.attr_add.value == other.attr_add.value &&
+        self.attr_remove.enabled == other.attr_remove.enabled &&
+        self.attr_remove.value == other.attr_remove.value &&
+        self.create_tree.enabled == other.create_tree.enabled &&
+        
+        self.retry_count.enabled == other.retry_count.enabled &&
+        self.retry_count.value == other.retry_count.value &&
+        self.retry_wait.enabled == other.retry_wait.enabled &&
+        self.retry_wait.value == other.retry_wait.value &&
+        
+        self.log_verbose.enabled == other.log_verbose.enabled &&
+        self.log_timestamps.enabled == other.log_timestamps.enabled &&
+        self.log_full_path.enabled == other.log_full_path.enabled &&
+        self.log_bytes.enabled == other.log_bytes.enabled &&
+        self.no_progress.enabled == other.no_progress.enabled &&
+        self.log_eta.enabled == other.log_eta.enabled &&
+        
+        self.exclude_changed.enabled == other.exclude_changed.enabled &&
+        self.exclude_newer.enabled == other.exclude_newer.enabled &&
+        self.exclude_older.enabled == other.exclude_older.enabled &&
+        self.exclude_extra.enabled == other.exclude_extra.enabled &&
+        self.exclude_lonely.enabled == other.exclude_lonely.enabled &&
+        self.include_same.enabled == other.include_same.enabled &&
+        self.include_modified.enabled == other.include_modified.enabled &&
+        
+        self.multi_thread.enabled == other.multi_thread.enabled &&
+        self.multi_thread.value == other.multi_thread.value &&
+        self.inter_packet_gap.enabled == other.inter_packet_gap.enabled &&
+        self.inter_packet_gap.value == other.inter_packet_gap.value
+    }
+
     /// Reset all options to disabled
     pub fn reset_all(&mut self) {
-        let default = Self::default();
+        let default = Self::new_empty();
         
         // Copy options
         self.copy_subdirs.enabled = false;
@@ -406,14 +536,17 @@ mod tests {
     #[test]
     fn test_default_options() {
         let options = RobocopyOptions::default();
-        assert!(!options.mirror.enabled);
-        assert!(!options.copy_all.enabled);
-        assert_eq!(options.current_preset, PresetGroup::None);
+        // Default preset is now LargeFilesWan
+        assert_eq!(options.current_preset, PresetGroup::LargeFilesWan);
+        assert!(options.copy_subdirs_empty.enabled);
+        assert!(options.copy_unbuffered.enabled);
     }
 
     #[test]
     fn test_basic_command_building() {
-        let options = RobocopyOptions::default();
+        // Create empty options for basic command test
+        let mut options = RobocopyOptions::new_empty();
+        options.current_preset = PresetGroup::None;
         let cmd = options.build_command_string("C:\\source", "C:\\dest");
         assert_eq!(cmd, "robocopy C:\\source C:\\dest");
     }
