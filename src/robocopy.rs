@@ -130,6 +130,8 @@ pub struct RobocopyOptions {
 
 impl Default for RobocopyOptions {
     fn default() -> Self {
+        const DEFAULT_PRESET: PresetGroup = PresetGroup::LargeFilesWan;
+        
         let mut opts = Self {
             // Copy options
             copy_subdirs: RobocopyOption::new("/S", "Copy Subdirectories", "Copy subdirectories, excluding empty ones"),
@@ -180,17 +182,22 @@ impl Default for RobocopyOptions {
             multi_thread: RobocopyOption::with_value("/MT:", "Multi-threaded", "Multi-threaded copy with N threads (default 8, max 128)", "8"),
             inter_packet_gap: RobocopyOption::with_value("/IPG:", "Inter-Packet Gap", "Inter-packet gap in milliseconds (for bandwidth throttling)", ""),
 
-            current_preset: PresetGroup::LargeFilesWan,
+            current_preset: DEFAULT_PRESET,
         };
         
         // Apply the default preset
-        opts.apply_preset(PresetGroup::LargeFilesWan);
+        opts.apply_preset(DEFAULT_PRESET);
         opts
     }
 }
 
 impl RobocopyOptions {
     /// Create a new RobocopyOptions without applying any preset
+    /// 
+    /// This creates options in their default/disabled state without applying any preset.
+    /// This is necessary to avoid infinite recursion when comparing current options
+    /// against a preset in `matches_current_preset()`. Use `default()` for normal
+    /// initialization, which applies the default preset.
     pub fn new_empty() -> Self {
         Self {
             // Copy options

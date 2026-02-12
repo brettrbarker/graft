@@ -155,6 +155,9 @@ impl CommandHistory {
     }
 
     /// Save the last used configuration
+    /// 
+    /// Stores the source path, destination path, and options for the last command
+    /// that was executed. This will be loaded automatically on next application start.
     pub fn save_last_config(&mut self, source: String, destination: String, options: RobocopyOptions) {
         self.last_config = Some(LastConfig {
             source,
@@ -164,6 +167,9 @@ impl CommandHistory {
     }
 
     /// Get the last used configuration
+    /// 
+    /// Returns the last saved configuration if available, or None if no configuration
+    /// has been saved yet. This is used to restore the last command on application startup.
     pub fn get_last_config(&self) -> Option<&LastConfig> {
         self.last_config.as_ref()
     }
