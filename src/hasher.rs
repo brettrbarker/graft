@@ -592,4 +592,59 @@ mod tests {
         
         cleanup_temp_dir(&temp_dir);
     }
+
+    #[test]
+    fn test_get_relative_path() {
+        use super::get_relative_path;
+        
+        let base = Path::new("/home/user/documents");
+        let file = Path::new("/home/user/documents/subfolder/file.txt");
+        
+        let relative = get_relative_path(base, file);
+        
+        // Path::strip_prefix returns paths with forward slashes on all platforms
+        assert_eq!(relative, "subfolder/file.txt");
+    }
+
+    #[test]
+    fn test_get_relative_path_same_path() {
+        use super::get_relative_path;
+        
+        let base = Path::new("/home/user/documents");
+        let file = Path::new("/home/user/documents");
+        
+        let relative = get_relative_path(base, file);
+        assert_eq!(relative, "");
+    }
+
+    #[test]
+    fn test_get_relative_path_not_prefix() {
+        use super::get_relative_path;
+        
+        let base = Path::new("/home/user/documents");
+        let file = Path::new("/other/path/file.txt");
+        
+        let relative = get_relative_path(base, file);
+        
+        // Should return the full path when not a prefix
+        #[cfg(windows)]
+        assert!(relative.contains("file.txt"));
+        
+        #[cfg(not(windows))]
+        assert_eq!(relative, "/other/path/file.txt");
+    }
+
+    #[test]
+    fn test_file_hash_structure() {
+        let hash = FileHash {
+            path: PathBuf::from("/test/file.txt"),
+            relative_path: "file.txt".to_string(),
+            hash: "abc123".to_string(),
+            size: 1024,
+        };
+        
+        assert_eq!(hash.relative_path, "file.txt");
+        assert_eq!(hash.hash, "abc123");
+        assert_eq!(hash.size, 1024);
+    }
 }

@@ -728,4 +728,230 @@ mod tests {
         assert!(opt.has_value);
         assert_eq!(opt.value, "default");
     }
+
+    #[test]
+    fn test_preset_descriptions() {
+        // Verify all presets have descriptions
+        assert!(!PresetGroup::None.description().is_empty());
+        assert!(!PresetGroup::LargeFilesWan.description().is_empty());
+        assert!(!PresetGroup::MirrorWithMetadata.description().is_empty());
+        assert!(!PresetGroup::CopyAllPreserve.description().is_empty());
+        assert!(!PresetGroup::IncrementalBackup.description().is_empty());
+        assert!(!PresetGroup::QuickCopy.description().is_empty());
+        
+        // Verify descriptions are meaningful
+        assert!(PresetGroup::LargeFilesWan.description().contains("WAN"));
+        assert!(PresetGroup::MirrorWithMetadata.description().contains("mirror"));
+        assert!(PresetGroup::IncrementalBackup.description().contains("new or changed"));
+    }
+
+    #[test]
+    fn test_matches_current_preset_true() {
+        let mut options = RobocopyOptions::default();
+        
+        // Default preset is LargeFilesWan, so it should match
+        assert!(options.matches_current_preset());
+        
+        // Apply a different preset and verify it matches
+        options.apply_preset(PresetGroup::QuickCopy);
+        assert!(options.matches_current_preset());
+    }
+
+    #[test]
+    fn test_matches_current_preset_false_after_modification() {
+        let mut options = RobocopyOptions::default();
+        options.apply_preset(PresetGroup::QuickCopy);
+        
+        // Verify it matches initially
+        assert!(options.matches_current_preset());
+        
+        // Modify an option
+        options.copy_backup.enabled = true;
+        
+        // Now it should not match
+        assert!(!options.matches_current_preset());
+    }
+
+    #[test]
+    fn test_matches_current_preset_custom_always_matches() {
+        let mut options = RobocopyOptions::new_empty();
+        options.current_preset = PresetGroup::None;
+        
+        // Custom preset always matches
+        assert!(options.matches_current_preset());
+        
+        // Even after modifications
+        options.mirror.enabled = true;
+        assert!(options.matches_current_preset());
+    }
+
+    #[test]
+    fn test_options_equal() {
+        let options1 = RobocopyOptions::default();
+        let options2 = RobocopyOptions::default();
+        
+        assert!(options1.options_equal(&options2));
+    }
+
+    #[test]
+    fn test_options_not_equal_different_enabled() {
+        let mut options1 = RobocopyOptions::default();
+        let options2 = RobocopyOptions::default();
+        
+        options1.copy_backup.enabled = true;
+        
+        assert!(!options1.options_equal(&options2));
+    }
+
+    #[test]
+    fn test_options_not_equal_different_values() {
+        let mut options1 = RobocopyOptions::default();
+        let mut options2 = RobocopyOptions::default();
+        
+        options1.multi_thread.enabled = true;
+        options1.multi_thread.value = "16".to_string();
+        
+        options2.multi_thread.enabled = true;
+        options2.multi_thread.value = "8".to_string();
+        
+        assert!(!options1.options_equal(&options2));
+    }
+
+    #[test]
+    fn test_build_command_string() {
+        let mut options = RobocopyOptions::new_empty();
+        options.copy_subdirs_empty.enabled = true;
+        options.mirror.enabled = true;
+        
+        let cmd = options.build_command_string("C:\\source", "D:\\destination");
+        
+        assert!(cmd.starts_with("robocopy"));
+        assert!(cmd.contains("C:\\source"));
+        assert!(cmd.contains("D:\\destination"));
+        assert!(cmd.contains("/E"));
+        assert!(cmd.contains("/MIR"));
+    }
+
+    #[test]
+    fn test_build_command_string_with_quoted_paths() {
+        let options = RobocopyOptions::new_empty();
+        
+        let cmd = options.build_command_string("C:\\path with spaces", "D:\\another path");
+        
+        assert!(cmd.contains("C:\\path with spaces"));
+        assert!(cmd.contains("D:\\another path"));
+    }
+
+    #[test]
+    fn test_build_command_string_with_values() {
+        let mut options = RobocopyOptions::new_empty();
+        options.retry_count.enabled = true;
+        options.retry_count.value = "5".to_string();
+        options.multi_thread.enabled = true;
+        options.multi_thread.value = "16".to_string();
+        
+        let cmd = options.build_command_string("C:\\src", "D:\\dst");
+        
+        assert!(cmd.contains("/R:5"));
+        assert!(cmd.contains("/MT:16"));
+    }
+
+    #[test]
+    fn test_new_empty_creates_disabled_options() {
+        let options = RobocopyOptions::new_empty();
+        
+        assert!(!options.copy_subdirs.enabled);
+        assert!(!options.copy_subdirs_empty.enabled);
+        assert!(!options.mirror.enabled);
+        assert!(!options.copy_all.enabled);
+        assert!(!options.multi_thread.enabled);
+        assert_eq!(options.current_preset, PresetGroup::None);
+    }
+
+    #[test]
+    fn test_default_applies_preset() {
+        let options = RobocopyOptions::default();
+        
+        // Default should apply LargeFilesWan preset
+        assert_eq!(options.current_preset, PresetGroup::LargeFilesWan);
+        assert!(options.copy_subdirs_empty.enabled);
+        assert!(options.copy_unbuffered.enabled);
+    }
+
+    #[test]
+    fn test_preset_application_resets_previous_options() {
+        let mut options = RobocopyOptions::default();
+        
+        // Apply one preset
+        options.apply_preset(PresetGroup::MirrorWithMetadata);
+        assert!(options.mirror.enabled);
+        
+        // Apply another preset - should reset previous options
+        options.apply_preset(PresetGroup::QuickCopy);
+        assert!(!options.mirror.enabled);
+        assert!(options.copy_subdirs_empty.enabled);
+    }
+
+    #[test]
+    fn test_all_presets_produce_valid_commands() {
+        let presets = vec![
+            PresetGroup::None,
+            PresetGroup::LargeFilesWan,
+            PresetGroup::MirrorWithMetadata,
+            PresetGroup::CopyAllPreserve,
+            PresetGroup::IncrementalBackup,
+            PresetGroup::QuickCopy,
+        ];
+        
+        for preset in presets {
+            let mut options = RobocopyOptions::default();
+            options.apply_preset(preset.clone());
+            
+            let cmd = options.build_command_string("C:\\src", "D:\\dst");
+            
+            // Should always start with robocopy
+            assert!(cmd.starts_with("robocopy"));
+            
+            // Should contain source and destination
+            assert!(cmd.contains("C:\\src"));
+            assert!(cmd.contains("D:\\dst"));
+        }
+    }
+
+    #[test]
+    fn test_option_flag_format() {
+        let opt1 = RobocopyOption::new("/TEST", "Test", "Description");
+        assert!(opt1.flag.starts_with('/'));
+        
+        let opt2 = RobocopyOption::with_value("/VAL:", "Value", "Description", "default");
+        assert!(opt2.flag.ends_with(':'));
+    }
+
+    #[test]
+    fn test_build_args_order_is_consistent() {
+        let mut options = RobocopyOptions::new_empty();
+        options.copy_subdirs_empty.enabled = true;
+        options.retry_count.enabled = true;
+        options.retry_count.value = "3".to_string();
+        
+        let args1 = options.build_args("C:\\src", "D:\\dst");
+        let args2 = options.build_args("C:\\src", "D:\\dst");
+        
+        // Should produce identical args
+        assert_eq!(args1, args2);
+    }
+
+    #[test]
+    fn test_attribute_options() {
+        let mut options = RobocopyOptions::new_empty();
+        options.attr_add.enabled = true;
+        options.attr_add.value = "RH".to_string();
+        options.attr_remove.enabled = true;
+        options.attr_remove.value = "A".to_string();
+        
+        let args = options.build_args("C:\\src", "D:\\dst");
+        
+        assert!(args.contains(&"/A+:RH".to_string()));
+        assert!(args.contains(&"/A-:A".to_string()));
+    }
 }
