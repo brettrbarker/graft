@@ -12,6 +12,8 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 /// Application state for running operations
@@ -27,6 +29,30 @@ enum AppState {
 enum MainTab {
     Options,
     History,
+}
+
+/// Console output line type for syntax highlighting
+#[derive(Clone, Debug)]
+enum ConsoleLineType {
+    Normal,
+    Command,      // Command being executed
+    Success,      // Successful operations
+    Warning,      // Warnings
+    Error,        // Errors
+    Summary,      // Summary statistics
+}
+
+/// Console output line with metadata
+#[derive(Clone, Debug)]
+struct ConsoleOutputLine {
+    text: String,
+    line_type: ConsoleLineType,
+}
+
+impl ConsoleOutputLine {
+    fn new(text: String, line_type: ConsoleLineType) -> Self {
+        Self { text, line_type }
+    }
 }
 
 /// The main application struct
@@ -66,7 +92,7 @@ pub struct GraftApp {
     current_entry_id: Option<u64>,
 
     // Console output
-    console_output: Vec<String>,
+    console_output: Vec<ConsoleOutputLine>,
     console_scroll_to_bottom: bool,
 
     // Log
@@ -100,6 +126,9 @@ pub struct GraftApp {
     robocopy_child: Option<Child>,
     output_thread: Option<JoinHandle<()>>,
     hash_thread_source: Option<JoinHandle<Result<Vec<FileHash>, String>>>,
+
+    // Cancel flag for operations
+    cancel_requested: Arc<AtomicBool>,
 }
 
 impl GraftApp {
@@ -148,6 +177,7 @@ impl GraftApp {
             robocopy_child: None,
             output_thread: None,
             hash_thread_source: None,
+            cancel_requested: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -285,7 +315,8 @@ impl GraftApp {
     }
 
     fn add_console_line(&mut self, line: String) {
-        self.console_output.push(line);
+        let line_type = Self::detect_line_type(&line);
+        self.console_output.push(ConsoleOutputLine::new(line, line_type));
         self.console_scroll_to_bottom = true;
         // Keep console buffer reasonable
         if self.console_output.len() > 10000 {
@@ -293,8 +324,57 @@ impl GraftApp {
         }
     }
 
+    /// Detect the line type based on content
+    fn detect_line_type(line: &str) -> ConsoleLineType {
+        let trimmed = line.trim();
+        
+        // Command lines start with ">>>"
+        if trimmed.starts_with(">>>") {
+            return ConsoleLineType::Command;
+        }
+        
+        // Errors
+        if trimmed.contains("[ERROR]") || trimmed.contains("Error:") || trimmed.starts_with("❌") {
+            return ConsoleLineType::Error;
+        }
+        
+        // Warnings
+        if trimmed.contains("WARNING") || trimmed.starts_with("⚠") {
+            return ConsoleLineType::Warning;
+        }
+        
+        // Success indicators
+        if trimmed.contains("✓") || trimmed.contains("Success") || trimmed.contains("completed successfully") {
+            return ConsoleLineType::Success;
+        }
+        
+        // Summary lines (robocopy statistics)
+        if trimmed.starts_with("Dirs :") || trimmed.starts_with("Files :") || 
+           trimmed.starts_with("Bytes :") || trimmed.starts_with("Times :") || 
+           trimmed.starts_with("Speed :") || trimmed.contains("Total") && trimmed.contains("Copied") {
+            return ConsoleLineType::Summary;
+        }
+        
+        ConsoleLineType::Normal
+    }
+
     fn clear_console(&mut self) {
         self.console_output.clear();
+    }
+
+    fn cancel_operation(&mut self) {
+        self.cancel_requested.store(true, Ordering::Relaxed);
+        self.log("Cancel requested...");
+        self.add_console_line("⚠ Operation cancelled by user".to_string());
+        
+        // Kill robocopy process if running
+        if let Some(mut child) = self.robocopy_child.take() {
+            let _ = child.kill();
+            self.log("Terminated robocopy process");
+        }
+        
+        // Note: Hash threads will check cancel_requested and exit gracefully
+        self.state = AppState::Idle;
     }
 
     fn destructive_option_labels(&self) -> Vec<&'static str> {
@@ -315,6 +395,13 @@ impl GraftApp {
     }
 
     fn request_start_robocopy(&mut self) {
+        // Validate paths first
+        if let Err(error) = self.validate_paths() {
+            self.log(&format!("Validation Error: {}", error));
+            self.add_console_line(format!("❌ Error: {}", error));
+            return;
+        }
+
         let destructive = self.destructive_option_labels();
         if destructive.is_empty() {
             self.start_robocopy();
@@ -334,12 +421,68 @@ impl GraftApp {
         self.show_destructive_warning = true;
     }
 
-    fn start_robocopy(&mut self) {
-        if self.source_path.is_empty() || self.destination_path.is_empty() {
-            self.log("Error: Source and destination paths are required");
-            return;
+    /// Validate source and destination paths
+    fn validate_paths(&self) -> Result<(), String> {
+        use std::path::Path;
+
+        if self.source_path.is_empty() {
+            return Err("Source path cannot be empty".to_string());
         }
 
+        if self.destination_path.is_empty() {
+            return Err("Destination path cannot be empty".to_string());
+        }
+
+        // Normalize paths for comparison
+        let source = Path::new(&self.source_path);
+        let dest = Path::new(&self.destination_path);
+
+        // Check if source exists (unless it's a dry run)
+        if !self.options.dry_run.enabled && !source.exists() {
+            return Err(format!("Source path does not exist: {}", self.source_path));
+        }
+
+        // Check if paths are the same
+        if let (Ok(src_canon), Ok(dst_canon)) = (source.canonicalize(), dest.canonicalize()) {
+            if src_canon == dst_canon {
+                return Err("Source and destination cannot be the same path".to_string());
+            }
+        } else if self.source_path == self.destination_path {
+            // Fallback comparison if canonicalize fails
+            return Err("Source and destination cannot be the same path".to_string());
+        }
+
+        // Check if destination is inside source
+        if dest.starts_with(source) {
+            return Err("Destination cannot be inside the source directory".to_string());
+        }
+
+        // Check if source is inside destination (could cause issues with mirror/purge)
+        if source.starts_with(dest) && (self.options.mirror.enabled || self.options.purge.enabled) {
+            return Err("Source cannot be inside destination when using Mirror or Purge options".to_string());
+        }
+
+        // Check path length (Windows MAX_PATH is 260, but we'll be conservative)
+        if self.source_path.len() > 250 || self.destination_path.len() > 250 {
+            return Err("Path length exceeds safe limits (max 250 characters recommended)".to_string());
+        }
+
+        // Check for invalid characters in paths (Windows specific)
+        let invalid_chars = ['<', '>', '"', '|', '?', '*'];
+        for ch in invalid_chars {
+            if self.source_path.contains(ch) || self.destination_path.contains(ch) {
+                return Err(format!("Path contains invalid character: '{}'", ch));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn start_robocopy(&mut self) {
+        // Validation is done in request_start_robocopy, so we can proceed
+        // Reset cancel flag for new operation
+        self.cancel_requested.store(false, Ordering::Relaxed);
+        
         let command = self.options.build_command_string(&self.source_path, &self.destination_path);
         self.log_entries.clear(); // Clear log for new transfer
         self.log(&format!("Preset: {}", self.options.current_preset.name()));
@@ -436,7 +579,7 @@ impl GraftApp {
 
         // Search console output from the end for the summary lines
         for line in self.console_output.iter().rev().take(30) {
-            let trimmed = line.trim();
+            let trimmed = line.text.trim();
             if trimmed.starts_with("Dirs :") || trimmed.starts_with("Dirs:") {
                 let nums = Self::parse_stat_line(trimmed);
                 if nums.len() >= 6 {
@@ -630,7 +773,8 @@ impl GraftApp {
 
         // Start hashing source only
         let source_path = PathBuf::from(&self.source_path);
-        self.hash_thread_source = Some(hash_directory(&source_path, tx));
+        let cancel_flag = Arc::clone(&self.cancel_requested);
+        self.hash_thread_source = Some(hash_directory(&source_path, tx, cancel_flag));
 
         self.state = AppState::Hashing;
     }
@@ -712,17 +856,6 @@ impl GraftApp {
             
             self.state = AppState::Idle;
         }
-    }
-
-    fn stop_operation(&mut self) {
-        if let Some(mut child) = self.robocopy_child.take() {
-            let _ = child.kill();
-            self.log("Operation cancelled by user");
-            self.add_console_line(">>> Operation cancelled by user".to_string());
-        }
-        self.state = AppState::Idle;
-        self.console_rx = None;
-        self.output_thread = None;
     }
 
     fn export_log(&self) {
@@ -886,7 +1019,7 @@ impl eframe::App for GraftApp {
             ui.heading("GRAFT - Graphical Robocopy Assured File Transfer Tool");
             ui.add_space(8.0);
 
-            // Source path row
+            // Source path row with recent paths dropdown
             ui.horizontal(|ui| {
                 ui.label("Source:        ");
                 if ui.button("Browse...").clicked() {
@@ -894,6 +1027,21 @@ impl eframe::App for GraftApp {
                         self.source_path = path.to_string_lossy().to_string();
                     }
                 }
+                
+                // Recent paths dropdown
+                let recent_sources = self.history.get_recent_source_paths().to_vec();
+                if !recent_sources.is_empty() {
+                    egui::ComboBox::from_id_salt("recent_sources")
+                        .selected_text("Recent...")
+                        .show_ui(ui, |ui| {
+                            for recent_path in &recent_sources {
+                                if ui.selectable_label(false, recent_path).clicked() {
+                                    self.source_path = recent_path.clone();
+                                }
+                            }
+                        });
+                }
+                
                 ui.add(
                     egui::TextEdit::singleline(&mut self.source_path)
                         .desired_width(ui.available_width())
@@ -903,7 +1051,7 @@ impl eframe::App for GraftApp {
 
             ui.add_space(4.0);
 
-            // Destination path row
+            // Destination path row with recent paths dropdown
             ui.horizontal(|ui| {
                 ui.label("Destination:");
                 if ui.button("Browse...").clicked() {
@@ -911,6 +1059,21 @@ impl eframe::App for GraftApp {
                         self.destination_path = path.to_string_lossy().to_string();
                     }
                 }
+                
+                // Recent paths dropdown
+                let recent_dests = self.history.get_recent_dest_paths().to_vec();
+                if !recent_dests.is_empty() {
+                    egui::ComboBox::from_id_salt("recent_dests")
+                        .selected_text("Recent...")
+                        .show_ui(ui, |ui| {
+                            for recent_path in &recent_dests {
+                                if ui.selectable_label(false, recent_path).clicked() {
+                                    self.destination_path = recent_path.clone();
+                                }
+                            }
+                        });
+                }
+                
                 ui.add(
                     egui::TextEdit::singleline(&mut self.destination_path)
                         .desired_width(ui.available_width())
@@ -959,8 +1122,8 @@ impl eframe::App for GraftApp {
                         self.request_start_robocopy();
                     }
                 } else {
-                    if ui.button("⏹ Stop").clicked() {
-                        self.stop_operation();
+                    if ui.button("⏹ Cancel").clicked() {
+                        self.cancel_operation();
                     }
                 }
 
@@ -1049,7 +1212,15 @@ impl eframe::App for GraftApp {
                 scroll_area.show(ui, |ui| {
                     ui.style_mut().override_font_id = Some(egui::FontId::monospace(12.0));
                     for line in &self.console_output {
-                        ui.label(line);
+                        let color = match line.line_type {
+                            ConsoleLineType::Normal => ui.style().visuals.text_color(),
+                            ConsoleLineType::Command => egui::Color32::from_rgb(79, 195, 247),  // Cyan/blue
+                            ConsoleLineType::Success => egui::Color32::from_rgb(102, 187, 106), // Green
+                            ConsoleLineType::Warning => egui::Color32::from_rgb(255, 183, 77),  // Orange
+                            ConsoleLineType::Error => egui::Color32::from_rgb(255, 84, 73),     // Red
+                            ConsoleLineType::Summary => egui::Color32::from_rgb(149, 117, 205), // Purple
+                        };
+                        ui.colored_label(color, &line.text);
                     }
                 });
             });
@@ -1128,6 +1299,24 @@ impl GraftApp {
                 }
                 ui.add_space(8.0);
             }
+
+            // Dry Run mode - prominent option
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.options.dry_run.enabled, &self.options.dry_run.name);
+                if self.options.dry_run.enabled {
+                    ui.label(
+                        egui::RichText::new("(Preview mode - no changes will be made)")
+                            .small()
+                            .color(egui::Color32::from_rgb(100, 180, 255)),
+                    );
+                }
+            });
+            ui.label(
+                egui::RichText::new(&self.options.dry_run.description)
+                    .small()
+                    .color(egui::Color32::GRAY),
+            );
+            ui.add_space(8.0);
 
             // Options in collapsible sections
             ui.columns(2, |columns| {

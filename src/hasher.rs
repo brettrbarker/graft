@@ -6,6 +6,8 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use walkdir::WalkDir;
 
@@ -114,6 +116,7 @@ pub fn collect_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
 pub fn hash_directory(
     dir: &Path,
     progress_tx: mpsc::Sender<HashProgress>,
+    cancel_flag: Arc<AtomicBool>,
 ) -> thread::JoinHandle<Result<Vec<FileHash>, String>> {
     let dir = dir.to_path_buf();
     
@@ -126,6 +129,12 @@ pub fn hash_directory(
         let mut hashes = Vec::new();
         
         for file_path in files {
+            // Check for cancellation
+            if cancel_flag.load(Ordering::Relaxed) {
+                let _ = progress_tx.send(HashProgress::Error("Cancelled by user".to_string()));
+                return Err("Cancelled by user".to_string());
+            }
+            
             let relative = get_relative_path(&dir, &file_path);
             let _ = progress_tx.send(HashProgress::FileStarted(relative.clone()));
             
@@ -563,7 +572,8 @@ mod tests {
         fs::write(temp_dir.join("file2.txt"), "content2").unwrap();
         
         let (tx, rx) = mpsc::channel();
-        let handle = hash_directory(&temp_dir, tx);
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let handle = hash_directory(&temp_dir, tx, cancel_flag);
         
         // Collect progress updates
         let mut starting_count = 0;
@@ -646,5 +656,35 @@ mod tests {
         assert_eq!(hash.relative_path, "file.txt");
         assert_eq!(hash.hash, "abc123");
         assert_eq!(hash.size, 1024);
+    }
+
+    #[test]
+    fn test_hash_directory_cancellation() {
+        let temp_dir = create_temp_dir("hash_cancel");
+        
+        // Create several test files
+        for i in 0..10 {
+            fs::write(temp_dir.join(format!("file{}.txt", i)), format!("content{}", i)).unwrap();
+        }
+        
+        let (tx, rx) = mpsc::channel();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_clone = Arc::clone(&cancel_flag);
+        
+        let handle = hash_directory(&temp_dir, tx, cancel_clone);
+        
+        // Cancel after receiving first progress update
+        let _= rx.recv_timeout(std::time::Duration::from_secs(1));
+        cancel_flag.store(true, Ordering::Relaxed);
+        
+        // Wait for completion
+        let result = handle.join().expect("Hash thread panicked");
+        
+        // Should be cancelled        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(e.contains("Cancelled"));
+        }
+        
+        cleanup_temp_dir(&temp_dir);
     }
 }

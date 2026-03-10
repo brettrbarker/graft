@@ -107,6 +107,12 @@ pub struct CommandHistory {
     pub entries: Vec<HistoryEntry>,
     pub max_entries: usize,
     pub last_config: Option<LastConfig>,
+    
+    #[serde(default)]
+    pub recent_source_paths: Vec<String>,
+    
+    #[serde(default)]
+    pub recent_dest_paths: Vec<String>,
 }
 
 /// Last used configuration
@@ -123,6 +129,8 @@ impl CommandHistory {
             entries: Vec::new(),
             max_entries: 100,
             last_config: None,
+            recent_source_paths: Vec::new(),
+            recent_dest_paths: Vec::new(),
         }
     }
 
@@ -165,6 +173,10 @@ impl CommandHistory {
 
     /// Add a new entry
     pub fn add_entry(&mut self, entry: HistoryEntry) {
+        // Update recent paths
+        self.add_recent_source_path(entry.source.clone());
+        self.add_recent_dest_path(entry.destination.clone());
+        
         self.entries.insert(0, entry);
         
         // Keep only max_entries (but always keep saved entries)
@@ -177,6 +189,52 @@ impl CommandHistory {
                 count <= self.max_entries
             }
         });
+    }
+
+    /// Add a path to recent sources (if not already at the top)
+    fn add_recent_source_path(&mut self, path: String) {
+        if path.is_empty() {
+            return;
+        }
+        
+        // Remove existing occurrence
+        self.recent_source_paths.retain(|p| p != &path);
+        
+        // Insert at front
+        self.recent_source_paths.insert(0, path);
+        
+        // Keep only last 10
+        if self.recent_source_paths.len() > 10 {
+            self.recent_source_paths.truncate(10);
+        }
+    }
+
+    /// Add a path to recent destinations (if not already at the top)
+    fn add_recent_dest_path(&mut self, path: String) {
+        if path.is_empty() {
+            return;
+        }
+        
+        // Remove existing occurrence
+        self.recent_dest_paths.retain(|p| p != &path);
+        
+        // Insert at front
+        self.recent_dest_paths.insert(0, path);
+        
+        // Keep only last 10
+        if self.recent_dest_paths.len() > 10 {
+            self.recent_dest_paths.truncate(10);
+        }
+    }
+
+    /// Get recent source paths
+    pub fn get_recent_source_paths(&self) -> &[String] {
+        &self.recent_source_paths
+    }
+
+    /// Get recent destination paths
+    pub fn get_recent_dest_paths(&self) -> &[String] {
+        &self.recent_dest_paths
     }
 
     /// Get recent entries (unsaved)
@@ -677,5 +735,64 @@ mod tests {
         
         assert_eq!(restored.source, "C:\\Test");
         assert_eq!(restored.destination, "D:\\Test");
+    }
+
+    #[test]
+    fn test_recent_paths_add() {
+        let mut history = CommandHistory::new();
+        
+        let entry1 = create_test_entry("C:\\Source1", "D:\\Dest1");
+        let entry2 = create_test_entry("C:\\Source2", "D:\\Dest2");
+        
+        history.add_entry(entry1);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        history.add_entry(entry2);
+        
+        let recent_sources = history.get_recent_source_paths();
+        let recent_dests = history.get_recent_dest_paths();
+        
+        assert_eq!(recent_sources.len(), 2);
+        assert_eq!(recent_dests.len(), 2);
+        
+        // Most recent should be first
+        assert_eq!(recent_sources[0], "C:\\Source2");
+        assert_eq!(recent_dests[0], "D:\\Dest2");
+    }
+
+    #[test]
+    fn test_recent_paths_dedup() {
+        let mut history = CommandHistory::new();
+        
+        let entry1 = create_test_entry("C:\\Source", "D:\\Dest1");
+        let entry2 = create_test_entry("C:\\Source", "D:\\Dest2");
+        
+        history.add_entry(entry1);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        history.add_entry(entry2);
+        
+        let recent_sources = history.get_recent_source_paths();
+        
+        // Should only have one copy of C:\\Source
+        assert_eq!(recent_sources.len(), 1);
+        assert_eq!(recent_sources[0], "C:\\Source");
+    }
+
+    #[test]
+    fn test_recent_paths_limit() {
+        let mut history = CommandHistory::new();
+        
+        // Add 15 entries
+        for i in 0..15 {
+            let entry = create_test_entry(&format!("C:\\Source{}", i), &format!("D:\\Dest{}", i));
+            history.add_entry(entry);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        
+        // Should only keep last 10
+        assert_eq!(history.get_recent_source_paths().len(), 10);
+        assert_eq!(history.get_recent_dest_paths().len(), 10);
+        
+        // Most recent should be first
+        assert_eq!(history.get_recent_source_paths()[0], "C:\\Source14");
     }
 }

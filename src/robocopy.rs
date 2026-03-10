@@ -124,6 +124,9 @@ pub struct RobocopyOptions {
     pub multi_thread: RobocopyOption,
     pub inter_packet_gap: RobocopyOption,
 
+    // Special modes
+    pub dry_run: RobocopyOption,
+
     // Current preset
     pub current_preset: PresetGroup,
 }
@@ -181,6 +184,9 @@ impl Default for RobocopyOptions {
             // Performance
             multi_thread: RobocopyOption::with_value("/MT:", "Multi-threaded", "Multi-threaded copy with N threads (default 8, max 128)", "8"),
             inter_packet_gap: RobocopyOption::with_value("/IPG:", "Inter-Packet Gap", "Inter-packet gap in milliseconds (for bandwidth throttling)", ""),
+
+            // Special modes
+            dry_run: RobocopyOption::new("/L", "Dry Run (List Only)", "List only - don't copy, delete or timestamp any files"),
 
             current_preset: DEFAULT_PRESET,
         };
@@ -248,6 +254,9 @@ impl RobocopyOptions {
             // Performance
             multi_thread: RobocopyOption::with_value("/MT:", "Multi-threaded", "Multi-threaded copy with N threads (default 8, max 128)", "8"),
             inter_packet_gap: RobocopyOption::with_value("/IPG:", "Inter-Packet Gap", "Inter-packet gap in milliseconds (for bandwidth throttling)", ""),
+
+            // Special modes
+            dry_run: RobocopyOption::new("/L", "Dry Run (List Only)", "List only - don't copy, delete or timestamp any files"),
 
             current_preset: PresetGroup::None,
         }
@@ -393,7 +402,9 @@ impl RobocopyOptions {
         self.multi_thread.enabled == other.multi_thread.enabled &&
         self.multi_thread.value == other.multi_thread.value &&
         self.inter_packet_gap.enabled == other.inter_packet_gap.enabled &&
-        self.inter_packet_gap.value == other.inter_packet_gap.value
+        self.inter_packet_gap.value == other.inter_packet_gap.value &&
+        
+        self.dry_run.enabled == other.dry_run.enabled
     }
 
     /// Reset all options to disabled
@@ -457,6 +468,9 @@ impl RobocopyOptions {
         self.multi_thread.value = default.multi_thread.value;
         self.inter_packet_gap.enabled = false;
         self.inter_packet_gap.value = default.inter_packet_gap.value;
+
+        // Special modes
+        self.dry_run.enabled = false;
     }
 
     /// Build the command line arguments
@@ -525,6 +539,9 @@ impl RobocopyOptions {
         // Performance
         add_opt(&mut args, &self.multi_thread);
         add_opt(&mut args, &self.inter_packet_gap);
+
+        // Special modes
+        add_opt(&mut args, &self.dry_run);
 
         args
     }
@@ -953,5 +970,18 @@ mod tests {
         
         assert!(args.contains(&"/A+:RH".to_string()));
         assert!(args.contains(&"/A-:A".to_string()));
+    }
+
+    #[test]
+    fn test_dry_run_mode() {
+        let mut options = RobocopyOptions::new_empty();
+        options.dry_run.enabled = true;
+        
+        let args = options.build_args("C:\\src", "D:\\dst");
+        
+        assert!(args.contains(&"/L".to_string()));
+        
+        let cmd = options.build_command_string("C:\\src", "D:\\dst");
+        assert!(cmd.contains("/L"));
     }
 }
