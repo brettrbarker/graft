@@ -690,26 +690,48 @@ impl GraftApp {
             .map(|h| h.is_finished())
             .unwrap_or(true);
 
-        if source_done && !self.source_hashes.is_empty() {
-            // Collect summary lines first to avoid borrow conflict
-            let summary_lines: Vec<String> = self.source_hashes.iter()
-                .map(|fh| format!("  {} | SHA-256: {} | {} bytes", fh.relative_path, fh.hash, fh.size))
-                .collect();
-            let count = self.source_hashes.len();
-
-            self.add_console_line(String::new());
-            self.add_console_line(">>> Source File Hash Summary:".to_string());
-            for line in summary_lines {
-                self.add_console_line(line);
+        if source_done {
+            if let Some(handle) = self.hash_thread_source.take() {
+                match handle.join() {
+                    Ok(Ok(hashes)) => {
+                        if self.source_hashes.is_empty() {
+                            self.source_hashes = hashes;
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        self.log(&format!("Hashing failed: {}", e));
+                        self.add_console_line(format!(">>> Hashing failed: {}", e));
+                    }
+                    Err(_) => {
+                        self.log("Hashing thread panicked");
+                        self.add_console_line(">>> Hashing thread panicked".to_string());
+                    }
+                }
             }
-            self.log(&format!("Source file hashing complete: {} files hashed", count));
 
-            self.hash_thread_source = None;
+            if self.source_hashes.is_empty() {
+                self.add_console_line(">>> Source hashing complete: 0 files".to_string());
+                self.log("Source file hashing complete: 0 files hashed");
+            } else {
+                // Collect summary lines first to avoid borrow conflict
+                let summary_lines: Vec<String> = self.source_hashes.iter()
+                    .map(|fh| format!("  {} | SHA-256: {} | {} bytes", fh.relative_path, fh.hash, fh.size))
+                    .collect();
+                let count = self.source_hashes.len();
+
+                self.add_console_line(String::new());
+                self.add_console_line(">>> Source File Hash Summary:".to_string());
+                for line in summary_lines {
+                    self.add_console_line(line);
+                }
+                self.log(&format!("Source file hashing complete: {} files hashed", count));
+            }
+
             self.hash_progress_rx = None;
-            
+
             // Save log to history after hashing is complete
             self.save_log_to_history();
-            
+
             self.state = AppState::Idle;
         }
     }
