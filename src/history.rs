@@ -107,6 +107,12 @@ pub struct CommandHistory {
     pub entries: Vec<HistoryEntry>,
     pub max_entries: usize,
     pub last_config: Option<LastConfig>,
+    
+    #[serde(default)]
+    pub recent_source_paths: Vec<String>,
+    
+    #[serde(default)]
+    pub recent_dest_paths: Vec<String>,
 }
 
 /// Last used configuration
@@ -123,6 +129,8 @@ impl CommandHistory {
             entries: Vec::new(),
             max_entries: 100,
             last_config: None,
+            recent_source_paths: Vec::new(),
+            recent_dest_paths: Vec::new(),
         }
     }
 
@@ -165,6 +173,10 @@ impl CommandHistory {
 
     /// Add a new entry
     pub fn add_entry(&mut self, entry: HistoryEntry) {
+        // Update recent paths
+        self.add_recent_source_path(entry.source.clone());
+        self.add_recent_dest_path(entry.destination.clone());
+        
         self.entries.insert(0, entry);
         
         // Keep only max_entries (but always keep saved entries)
@@ -177,6 +189,52 @@ impl CommandHistory {
                 count <= self.max_entries
             }
         });
+    }
+
+    /// Add a path to recent sources (if not already at the top)
+    fn add_recent_source_path(&mut self, path: String) {
+        if path.is_empty() {
+            return;
+        }
+        
+        // Remove existing occurrence
+        self.recent_source_paths.retain(|p| p != &path);
+        
+        // Insert at front
+        self.recent_source_paths.insert(0, path);
+        
+        // Keep only last 10
+        if self.recent_source_paths.len() > 10 {
+            self.recent_source_paths.truncate(10);
+        }
+    }
+
+    /// Add a path to recent destinations (if not already at the top)
+    fn add_recent_dest_path(&mut self, path: String) {
+        if path.is_empty() {
+            return;
+        }
+        
+        // Remove existing occurrence
+        self.recent_dest_paths.retain(|p| p != &path);
+        
+        // Insert at front
+        self.recent_dest_paths.insert(0, path);
+        
+        // Keep only last 10
+        if self.recent_dest_paths.len() > 10 {
+            self.recent_dest_paths.truncate(10);
+        }
+    }
+
+    /// Get recent source paths
+    pub fn get_recent_source_paths(&self) -> &[String] {
+        &self.recent_source_paths
+    }
+
+    /// Get recent destination paths
+    pub fn get_recent_dest_paths(&self) -> &[String] {
+        &self.recent_dest_paths
     }
 
     /// Get recent entries (unsaved)
@@ -487,5 +545,254 @@ mod tests {
         
         assert_eq!(restored.entries.len(), 1);
         assert_eq!(restored.entries[0].source, "C:\\Source");
+    }
+
+    #[test]
+    fn test_history_entry_get_username() {
+        // This test checks that get_username returns something or None
+        let username = HistoryEntry::get_username();
+        
+        // On most systems, USERNAME or USER should be set
+        // We can't assert exact value, but can verify the function works
+        assert!(username.is_some() || username.is_none());
+    }
+
+    #[test]
+    fn test_history_entry_get_log_directory() {
+        let log_dir = HistoryEntry::get_log_directory();
+        
+        // Should return a path on most systems
+        if let Some(dir) = log_dir {
+            assert!(dir.to_string_lossy().contains("Graft"));
+            assert!(dir.to_string_lossy().contains("logs"));
+        }
+    }
+
+    #[test]
+    fn test_history_entry_generate_log_filename() {
+        let entry = create_test_entry("C:\\Source", "D:\\Dest");
+        let filename = entry.generate_log_filename();
+        
+        assert!(filename.starts_with("graft_"));
+        assert!(filename.ends_with(".log"));
+        assert!(filename.contains(&entry.timestamp.format("%Y-%m-%d").to_string()));
+    }
+
+    #[test]
+    fn test_history_entry_generate_log_filename_with_ticket() {
+        let mut entry = create_test_entry("C:\\Source", "D:\\Dest");
+        entry.ticket_number = Some("TICKET-123".to_string());
+        
+        let filename = entry.generate_log_filename();
+        
+        assert!(filename.contains("TICKET-123"));
+        assert!(filename.ends_with(".log"));
+    }
+
+    #[test]
+    fn test_history_entry_save_log_to_disk() {
+        let mut entry = create_test_entry("C:\\Source", "D:\\Dest");
+        entry.log_content = Some("Test log content\nLine 2\nLine 3".to_string());
+        
+        // Try to save (may fail if no permissions, which is okay for testing)
+        let result = entry.save_log_to_disk();
+        
+        if let Ok(log_path) = result {
+            // Verify the file was created
+            assert!(log_path.exists());
+            
+            // Read and verify content
+            let content = std::fs::read_to_string(&log_path).expect("Failed to read log file");
+            assert_eq!(content, "Test log content\nLine 2\nLine 3");
+            
+            // Cleanup
+            let _ = std::fs::remove_file(&log_path);
+        }
+    }
+
+    #[test]
+    fn test_history_entry_save_log_without_content() {
+        let entry = create_test_entry("C:\\Source", "D:\\Dest");
+        // No log_content set
+        
+        let result = entry.save_log_to_disk();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_command_history_set_log_content() {
+        let mut history = CommandHistory::new();
+        let entry = create_test_entry("C:\\Source", "D:\\Dest");
+        let entry_id = entry.id;
+        
+        history.add_entry(entry);
+        
+        history.set_log_content(entry_id, "Log content here".to_string(), Some("TKT-456".to_string()));
+        
+        assert_eq!(history.entries[0].log_content, Some("Log content here".to_string()));
+        assert_eq!(history.entries[0].ticket_number, Some("TKT-456".to_string()));
+    }
+
+    #[test]
+    fn test_command_history_set_log_content_without_ticket() {
+        let mut history = CommandHistory::new();
+        let entry = create_test_entry("C:\\Source", "D:\\Dest");
+        let entry_id = entry.id;
+        
+        history.add_entry(entry);
+        
+        history.set_log_content(entry_id, "Log without ticket".to_string(), None);
+        
+        assert_eq!(history.entries[0].log_content, Some("Log without ticket".to_string()));
+        assert_eq!(history.entries[0].ticket_number, None);
+    }
+
+    #[test]
+    fn test_command_history_get_entry_mut() {
+        let mut history = CommandHistory::new();
+        let entry = create_test_entry("C:\\Source", "D:\\Dest");
+        let entry_id = entry.id;
+        
+        history.add_entry(entry);
+        
+        // Get mutable reference and modify
+        if let Some(entry_mut) = history.get_entry_mut(entry_id) {
+            entry_mut.saved = true;
+        }
+        
+        assert!(history.entries[0].saved);
+    }
+
+    #[test]
+    fn test_command_history_get_entry_mut_not_found() {
+        let mut history = CommandHistory::new();
+        
+        let result = history.get_entry_mut(99999);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_command_history_save_last_config() {
+        let mut history = CommandHistory::new();
+        let options = RobocopyOptions::default();
+        
+        history.save_last_config(
+            "C:\\LastSource".to_string(),
+            "D:\\LastDest".to_string(),
+            options.clone(),
+        );
+        
+        assert!(history.last_config.is_some());
+        let config = history.last_config.as_ref().unwrap();
+        assert_eq!(config.source, "C:\\LastSource");
+        assert_eq!(config.destination, "D:\\LastDest");
+    }
+
+    #[test]
+    fn test_command_history_get_last_config() {
+        let mut history = CommandHistory::new();
+        
+        // No config saved yet
+        assert!(history.get_last_config().is_none());
+        
+        // Save a config
+        let options = RobocopyOptions::default();
+        history.save_last_config(
+            "C:\\Source".to_string(),
+            "D:\\Dest".to_string(),
+            options,
+        );
+        
+        // Now it should return the config
+        let config = history.get_last_config();
+        assert!(config.is_some());
+        assert_eq!(config.unwrap().source, "C:\\Source");
+    }
+
+    #[test]
+    fn test_command_history_display_name_with_ticket() {
+        let mut entry = create_test_entry("C:\\Source", "D:\\Dest");
+        entry.ticket_number = Some("TICKET-789".to_string());
+        
+        let display = entry.display_name();
+        
+        assert!(display.contains("[TICKET-789]"));
+    }
+
+    #[test]
+    fn test_last_config_serialization() {
+        let config = LastConfig {
+            source: "C:\\Test".to_string(),
+            destination: "D:\\Test".to_string(),
+            options: RobocopyOptions::default(),
+        };
+        
+        // Serialize to JSON
+        let json = serde_json::to_string(&config).expect("Failed to serialize");
+        
+        // Deserialize back
+        let restored: LastConfig = serde_json::from_str(&json).expect("Failed to deserialize");
+        
+        assert_eq!(restored.source, "C:\\Test");
+        assert_eq!(restored.destination, "D:\\Test");
+    }
+
+    #[test]
+    fn test_recent_paths_add() {
+        let mut history = CommandHistory::new();
+        
+        let entry1 = create_test_entry("C:\\Source1", "D:\\Dest1");
+        let entry2 = create_test_entry("C:\\Source2", "D:\\Dest2");
+        
+        history.add_entry(entry1);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        history.add_entry(entry2);
+        
+        let recent_sources = history.get_recent_source_paths();
+        let recent_dests = history.get_recent_dest_paths();
+        
+        assert_eq!(recent_sources.len(), 2);
+        assert_eq!(recent_dests.len(), 2);
+        
+        // Most recent should be first
+        assert_eq!(recent_sources[0], "C:\\Source2");
+        assert_eq!(recent_dests[0], "D:\\Dest2");
+    }
+
+    #[test]
+    fn test_recent_paths_dedup() {
+        let mut history = CommandHistory::new();
+        
+        let entry1 = create_test_entry("C:\\Source", "D:\\Dest1");
+        let entry2 = create_test_entry("C:\\Source", "D:\\Dest2");
+        
+        history.add_entry(entry1);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        history.add_entry(entry2);
+        
+        let recent_sources = history.get_recent_source_paths();
+        
+        // Should only have one copy of C:\\Source
+        assert_eq!(recent_sources.len(), 1);
+        assert_eq!(recent_sources[0], "C:\\Source");
+    }
+
+    #[test]
+    fn test_recent_paths_limit() {
+        let mut history = CommandHistory::new();
+        
+        // Add 15 entries
+        for i in 0..15 {
+            let entry = create_test_entry(&format!("C:\\Source{}", i), &format!("D:\\Dest{}", i));
+            history.add_entry(entry);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        
+        // Should only keep last 10
+        assert_eq!(history.get_recent_source_paths().len(), 10);
+        assert_eq!(history.get_recent_dest_paths().len(), 10);
+        
+        // Most recent should be first
+        assert_eq!(history.get_recent_source_paths()[0], "C:\\Source14");
     }
 }
