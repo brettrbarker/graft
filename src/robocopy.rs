@@ -1104,7 +1104,7 @@ mod tests {
 
         let errors = options.validate_enabled_options();
         assert_eq!(errors.len(), 1);
-        assert!(errors[0].contains("cannot contain '/' or '\\\\'"));
+        assert!(errors[0].contains("cannot contain '/' or '\\'"));
     }
 
     #[test]
@@ -1115,7 +1115,7 @@ mod tests {
 
         let errors = options.validate_enabled_options();
         assert_eq!(errors.len(), 1);
-        assert!(errors[0].contains("cannot contain '/' or '\\\\'"));
+        assert!(errors[0].contains("cannot contain '/' or '\\'"));
     }
 
     #[test]
