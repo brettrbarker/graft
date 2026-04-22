@@ -35,6 +35,69 @@ impl RobocopyOption {
             value: default.to_string(),
         }
     }
+
+    /// Validate the value for this option when enabled.
+    pub fn validation_error(&self) -> Option<String> {
+        if !self.enabled || !self.has_value {
+            return None;
+        }
+
+        let value = self.value.trim();
+
+        if value.is_empty() {
+            return Some("value cannot be empty".to_string());
+        }
+
+        if value.chars().any(|ch| ch.is_whitespace()) {
+            return Some("value cannot contain spaces".to_string());
+        }
+
+        if value.contains('/') || value.contains('\\') {
+            return Some("value cannot contain '/' or '\\'".to_string());
+        }
+
+        match self.flag.as_str() {
+            "/LEV:" | "/R:" | "/W:" | "/IPG:" => {
+                if !value.chars().all(|ch| ch.is_ascii_digit()) {
+                    return Some("value must be a non-negative integer".to_string());
+                }
+            }
+            "/MT:" => {
+                if !value.chars().all(|ch| ch.is_ascii_digit()) {
+                    return Some("value must be an integer between 1 and 128".to_string());
+                }
+
+                match value.parse::<u16>() {
+                    Ok(v) if (1..=128).contains(&v) => {}
+                    _ => return Some("value must be between 1 and 128".to_string()),
+                }
+            }
+            "/A+:" | "/A-:" => {
+                if !Self::contains_only_allowed_letters(value, "RASHCNET") {
+                    return Some("value must use only attribute letters: R, A, S, H, C, N, E, T".to_string());
+                }
+            }
+            "/COPY:" => {
+                if !Self::contains_only_allowed_letters(value, "DATSOU") {
+                    return Some("value must use only copy flags: D, A, T, S, O, U".to_string());
+                }
+            }
+            "/DCOPY:" => {
+                if !Self::contains_only_allowed_letters(value, "DATE") {
+                    return Some("value must use only directory copy flags: D, A, T, E".to_string());
+                }
+            }
+            _ => {}
+        }
+
+        None
+    }
+
+    fn contains_only_allowed_letters(value: &str, allowed: &str) -> bool {
+        value
+            .chars()
+            .all(|ch| allowed.contains(ch.to_ascii_uppercase()))
+    }
 }
 
 /// Preset groups for common operations
@@ -198,6 +261,30 @@ impl Default for RobocopyOptions {
 }
 
 impl RobocopyOptions {
+    /// Validate all enabled value-bearing options and return user-facing errors.
+    pub fn validate_enabled_options(&self) -> Vec<String> {
+        let value_options = [
+            &self.copy_levels,
+            &self.copy_flags,
+            &self.dir_copy_flags,
+            &self.attr_add,
+            &self.attr_remove,
+            &self.retry_count,
+            &self.retry_wait,
+            &self.multi_thread,
+            &self.inter_packet_gap,
+        ];
+
+        let mut errors = Vec::new();
+        for option in value_options {
+            if let Some(error) = option.validation_error() {
+                errors.push(format!("{}: {}", option.name, error));
+            }
+        }
+
+        errors
+    }
+
     /// Create a new RobocopyOptions without applying any preset
     /// 
     /// This creates options in their default/disabled state without applying any preset.
@@ -549,7 +636,20 @@ impl RobocopyOptions {
     /// Get the full command string for display
     pub fn build_command_string(&self, source: &str, destination: &str) -> String {
         let args = self.build_args(source, destination);
-        format!("robocopy {}", args.join(" "))
+        let display_args: Vec<String> = args
+            .iter()
+            .map(|arg| Self::quote_arg_for_display(arg))
+            .collect();
+        format!("robocopy {}", display_args.join(" "))
+    }
+
+    fn quote_arg_for_display(arg: &str) -> String {
+        let escaped = arg.replace('"', "\\\"");
+        if arg.is_empty() || arg.chars().any(|ch| ch.is_whitespace()) {
+            format!("\"{}\"", escaped)
+        } else {
+            escaped
+        }
     }
 }
 
@@ -855,8 +955,8 @@ mod tests {
         
         let cmd = options.build_command_string("C:\\path with spaces", "D:\\another path");
         
-        assert!(cmd.contains("C:\\path with spaces"));
-        assert!(cmd.contains("D:\\another path"));
+        assert!(cmd.contains("\"C:\\path with spaces\""));
+        assert!(cmd.contains("\"D:\\another path\""));
     }
 
     #[test]
@@ -983,5 +1083,100 @@ mod tests {
         
         let cmd = options.build_command_string("C:\\src", "D:\\dst");
         assert!(cmd.contains("/L"));
+    }
+
+    #[test]
+    fn test_validate_enabled_options_rejects_space() {
+        let mut options = RobocopyOptions::new_empty();
+        options.retry_count.enabled = true;
+        options.retry_count.value = "1 0".to_string();
+
+        let errors = options.validate_enabled_options();
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("Retry Count"));
+    }
+
+    #[test]
+    fn test_validate_enabled_options_rejects_forward_slash() {
+        let mut options = RobocopyOptions::new_empty();
+        options.retry_wait.enabled = true;
+        options.retry_wait.value = "5/0".to_string();
+
+        let errors = options.validate_enabled_options();
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("cannot contain '/' or '\\'"));
+    }
+
+    #[test]
+    fn test_validate_enabled_options_rejects_backslash() {
+        let mut options = RobocopyOptions::new_empty();
+        options.retry_wait.enabled = true;
+        options.retry_wait.value = "5\\0".to_string();
+
+        let errors = options.validate_enabled_options();
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("cannot contain '/' or '\\'"));
+    }
+
+    #[test]
+    fn test_validate_enabled_options_rejects_invalid_copy_flags() {
+        let mut options = RobocopyOptions::new_empty();
+        options.copy_flags.enabled = true;
+        options.copy_flags.value = "DZX".to_string();
+
+        let errors = options.validate_enabled_options();
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("copy flags"));
+    }
+
+    #[test]
+    fn test_validate_enabled_options_rejects_multi_thread_range() {
+        let mut options = RobocopyOptions::new_empty();
+        options.multi_thread.enabled = true;
+        options.multi_thread.value = "129".to_string();
+
+        let errors = options.validate_enabled_options();
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("between 1 and 128"));
+    }
+
+    #[test]
+    fn test_validate_enabled_options_accepts_valid_values() {
+        let mut options = RobocopyOptions::new_empty();
+        options.retry_count.enabled = true;
+        options.retry_count.value = "3".to_string();
+        options.copy_flags.enabled = true;
+        options.copy_flags.value = "dats".to_string();
+        options.dir_copy_flags.enabled = true;
+        options.dir_copy_flags.value = "date".to_string();
+        options.attr_add.enabled = true;
+        options.attr_add.value = "RA".to_string();
+        options.multi_thread.enabled = true;
+        options.multi_thread.value = "16".to_string();
+
+        let errors = options.validate_enabled_options();
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_build_command_string_quotes_option_arg_with_spaces() {
+        let mut options = RobocopyOptions::new_empty();
+        options.copy_flags.enabled = true;
+        options.copy_flags.value = "DAT SOU".to_string();
+
+        let cmd = options.build_command_string("C:\\src", "D:\\dst");
+        assert!(cmd.contains("\"/COPY:DAT SOU\""));
+    }
+
+    #[test]
+    fn test_build_args_keeps_execution_args_unquoted() {
+        let mut options = RobocopyOptions::new_empty();
+        options.copy_flags.enabled = true;
+        options.copy_flags.value = "DATSOU".to_string();
+
+        let args = options.build_args("C:\\src path", "D:\\dst path");
+        assert_eq!(args[0], "C:\\src path");
+        assert_eq!(args[1], "D:\\dst path");
+        assert!(args.contains(&"/COPY:DATSOU".to_string()));
     }
 }
