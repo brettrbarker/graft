@@ -1419,12 +1419,11 @@ dependencies = [
 
 [[package]]
 name = "graft"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "chrono",
  "dirs",
  "eframe",
- "egui",
  "hex",
  "rfd",
  "serde",
