@@ -1,2 +1,4 @@
 [advisories]
-ignore = ["RUSTSEC-2024-0436"]
+# Removed paste dependency. No longer vulnerable to RUSTSEC-2024-0436,
+# but leaving the advisory here in case it becomes relevant again in the future.
+# ignore = ["RUSTSEC-2024-0436"]
