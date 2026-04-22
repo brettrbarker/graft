@@ -410,6 +410,17 @@ impl GraftApp {
             return;
         }
 
+        let option_errors = self.options.validate_enabled_options();
+        if !option_errors.is_empty() {
+            self.log("Validation Error: invalid custom option values");
+            self.add_console_line("❌ Error: Invalid custom option values:".to_string());
+            for error in option_errors {
+                self.log(&format!("Validation Error: {}", error));
+                self.add_console_line(format!("❌ {}", error));
+            }
+            return;
+        }
+
         let destructive = self.destructive_option_labels();
         if destructive.is_empty() {
             self.start_robocopy();
@@ -1639,6 +1650,15 @@ impl GraftApp {
                 ui.add(egui::TextEdit::singleline(&mut opt.value).desired_width(60.0));
             }
         });
+
+        if let Some(error) = opt.validation_error() {
+            ui.label(
+                egui::RichText::new(format!("⚠ {}", error))
+                    .small()
+                    .color(egui::Color32::from_rgb(255, 180, 90)),
+            );
+        }
+
         ui.label(
             egui::RichText::new(&opt.description)
                 .small()
