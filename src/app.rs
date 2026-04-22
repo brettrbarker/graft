@@ -893,18 +893,44 @@ impl GraftApp {
                 self.add_console_line(">>> Source hashing complete: 0 files".to_string());
                 self.log("Source file hashing complete: 0 files hashed");
             } else {
-                // Collect summary lines first to avoid borrow conflict
-                let summary_lines: Vec<String> = self.source_hashes.iter()
-                    .map(|fh| format!("  {} | SHA-256: {} | {} bytes", fh.relative_path, fh.hash, fh.size))
-                    .collect();
                 let count = self.source_hashes.len();
+                let preview_count = count.min(25);
+                let preview_lines: Vec<String> = self
+                    .source_hashes
+                    .iter()
+                    .take(preview_count)
+                    .map(|fh| {
+                        format!(
+                            "  {} | SHA-256: {} | {} bytes",
+                            fh.relative_path,
+                            fh.hash,
+                            fh.size
+                        )
+                    })
+                    .collect();
 
                 self.add_console_line(String::new());
                 self.add_console_line(">>> Source File Hash Summary:".to_string());
-                for line in summary_lines {
+                self.add_console_line(format!("  Total hashed files: {}", count));
+                self.add_console_line(format!("  Showing first {} files:", preview_count));
+                for line in preview_lines {
                     self.add_console_line(line);
                 }
+                if count > preview_count {
+                    self.add_console_line(format!(
+                        "  ... {} additional files omitted from live console output",
+                        count - preview_count
+                    ));
+                }
                 self.log(&format!("Source file hashing complete: {} files hashed", count));
+            }
+
+            // If destination hashing is not enabled, source hashing is the terminal stage.
+            if !self.enable_destination_hashing {
+                self.hash_progress_rx = None;
+                self.save_log_to_history();
+                self.state = AppState::Idle;
+                return;
             }
 
             // Start destination hashing if enabled
@@ -960,16 +986,34 @@ impl GraftApp {
                 self.add_console_line(">>> Destination hashing complete: 0 files".to_string());
                 self.log("Destination file hashing complete: 0 files hashed");
             } else {
-                // Collect summary lines first to avoid borrow conflict
-                let summary_lines: Vec<String> = self.destination_hashes.iter()
-                    .map(|fh| format!("  {} | SHA-256: {} | {} bytes", fh.relative_path, fh.hash, fh.size))
-                    .collect();
                 let count = self.destination_hashes.len();
+                let preview_count = count.min(25);
+                let preview_lines: Vec<String> = self
+                    .destination_hashes
+                    .iter()
+                    .take(preview_count)
+                    .map(|fh| {
+                        format!(
+                            "  {} | SHA-256: {} | {} bytes",
+                            fh.relative_path,
+                            fh.hash,
+                            fh.size
+                        )
+                    })
+                    .collect();
 
                 self.add_console_line(String::new());
                 self.add_console_line(">>> Destination File Hash Summary:".to_string());
-                for line in summary_lines {
+                self.add_console_line(format!("  Total hashed files: {}", count));
+                self.add_console_line(format!("  Showing first {} files:", preview_count));
+                for line in preview_lines {
                     self.add_console_line(line);
+                }
+                if count > preview_count {
+                    self.add_console_line(format!(
+                        "  ... {} additional files omitted from live console output",
+                        count - preview_count
+                    ));
                 }
                 self.log(&format!("Destination file hashing complete: {} files hashed", count));
             }
