@@ -1,6 +1,6 @@
 [package]
 name = "graft"
-version = "1.0.4"
+version = "1.0.5"
 edition = "2021"
 description = "GRAFT - Graphical Robocopy Assured File Transfer Tool"
 authors = ["Brett Barker"]
