@@ -1,14 +1,13 @@
 [package]
 name = "graft"
-version = "1.0.3"
+version = "1.0.4"
 edition = "2021"
 description = "GRAFT - Graphical Robocopy Assured File Transfer Tool"
 authors = ["Brett Barker"]
 
 [dependencies]
 # GUI framework
-eframe = "0.33"
-egui = "0.33"
+eframe = { version = "0.33", default-features = false, features = ["default_fonts", "glow"] }
 
 # File dialogs
 rfd = "0.17"

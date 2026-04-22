@@ -96,7 +96,7 @@ pub fn collect_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
 
     let mut files = Vec::new();
     
-    for entry in WalkDir::new(dir).follow_links(true) {
+    for entry in WalkDir::new(dir).follow_links(false) {
         match entry {
             Ok(entry) => {
                 if entry.file_type().is_file() {
@@ -156,7 +156,7 @@ pub fn hash_directory(
                 }
                 Err(e) => {
                     let _ = progress_tx.send(HashProgress::Error(e.clone()));
-                    return Err(e);
+                    continue;
                 }
             }
         }

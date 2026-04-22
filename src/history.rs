@@ -5,6 +5,19 @@ use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static ENTRY_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn generate_entry_id() -> u64 {
+    const SEQ_BITS: u32 = 16;
+    const SEQ_MASK: u64 = (1 << SEQ_BITS) - 1;
+
+    let timestamp_ms = Local::now().timestamp_millis().max(0) as u64;
+    let sequence = ENTRY_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed) & SEQ_MASK;
+
+    (timestamp_ms << SEQ_BITS) | sequence
+}
 
 /// A single command history entry
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -28,7 +41,7 @@ pub struct HistoryEntry {
 impl HistoryEntry {
     pub fn new(source: String, destination: String, command: String, options: RobocopyOptions) -> Self {
         Self {
-            id: Local::now().timestamp_millis() as u64,
+            id: generate_entry_id(),
             timestamp: Local::now(),
             source,
             destination,
@@ -70,11 +83,34 @@ impl HistoryEntry {
         dirs::data_local_dir().map(|p| p.join("Graft").join("logs"))
     }
 
+    fn sanitize_filename_component(value: &str) -> String {
+        let sanitized: String = value
+            .trim()
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+
+        let sanitized = sanitized.trim_matches('_');
+        let truncated: String = sanitized.chars().take(64).collect();
+
+        if truncated.is_empty() {
+            "ticket".to_string()
+        } else {
+            truncated
+        }
+    }
+
     /// Generate a log filename for this entry
     pub fn generate_log_filename(&self) -> String {
         let timestamp = self.timestamp.format("%Y-%m-%d_%H-%M-%S");
         if let Some(ref ticket) = self.ticket_number {
-            let sanitized_ticket = ticket.trim().replace(' ', "_");
+            let sanitized_ticket = Self::sanitize_filename_component(ticket);
             format!("graft_{}_{}.log", timestamp, sanitized_ticket)
         } else {
             format!("graft_{}.log", timestamp)
@@ -310,6 +346,7 @@ impl CommandHistory {
 mod tests {
     use super::*;
     use crate::robocopy::RobocopyOptions;
+    use std::collections::HashSet;
 
     fn create_test_entry(source: &str, dest: &str) -> HistoryEntry {
         HistoryEntry::new(
@@ -590,6 +627,23 @@ mod tests {
     }
 
     #[test]
+    fn test_generate_log_filename_sanitizes_ticket() {
+        let mut entry = create_test_entry("C:\\Source", "D:\\Dest");
+        entry.ticket_number = Some("..\\..//evil:ticket*name?".to_string());
+
+        let filename = entry.generate_log_filename();
+
+        assert!(filename.starts_with("graft_"));
+        assert!(filename.ends_with(".log"));
+        assert!(!filename.contains(".."));
+        assert!(!filename.contains('/'));
+        assert!(!filename.contains('\\'));
+        assert!(!filename.contains(':'));
+        assert!(!filename.contains('*'));
+        assert!(!filename.contains('?'));
+    }
+
+    #[test]
     fn test_history_entry_save_log_to_disk() {
         let mut entry = create_test_entry("C:\\Source", "D:\\Dest");
         entry.log_content = Some("Test log content\nLine 2\nLine 3".to_string());
@@ -617,6 +671,16 @@ mod tests {
         
         let result = entry.save_log_to_disk();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_history_entry_ids_are_unique_under_rapid_creation() {
+        let mut ids = HashSet::new();
+
+        for i in 0..500 {
+            let entry = create_test_entry(&format!("C:\\Src{}", i), &format!("D:\\Dst{}", i));
+            assert!(ids.insert(entry.id), "Duplicate id generated: {}", entry.id);
+        }
     }
 
     #[test]

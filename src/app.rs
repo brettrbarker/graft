@@ -1,8 +1,8 @@
 //! Main application GUI module
 
 use crate::hasher::{
-    format_hash_results, hash_directory, FileHash,
-    HashProgress,
+    format_hash_results, hash_directory, compare_hashes,
+    FileHash, HashProgress,
 };
 use crate::history::{CommandHistory, HistoryEntry};
 use crate::robocopy::{PresetGroup, RobocopyOption, RobocopyOptions};
@@ -107,7 +107,10 @@ pub struct GraftApp {
 
     // Hashing
     enable_hashing: bool,
+    enable_destination_hashing: bool,
+    show_destination_hash_warning: bool,
     source_hashes: Vec<FileHash>,
+    destination_hashes: Vec<FileHash>,
     hash_progress_text: String,
     hash_files_processed: usize,
     hash_files_total: usize,
@@ -126,6 +129,7 @@ pub struct GraftApp {
     robocopy_child: Option<Child>,
     output_thread: Option<JoinHandle<()>>,
     hash_thread_source: Option<JoinHandle<Result<Vec<FileHash>, String>>>,
+    hash_thread_destination: Option<JoinHandle<Result<Vec<FileHash>, String>>>,
 
     // Cancel flag for operations
     cancel_requested: Arc<AtomicBool>,
@@ -166,7 +170,10 @@ impl GraftApp {
             destructive_warning_text: String::new(),
             show_about: false,
             enable_hashing: true,
+            enable_destination_hashing: false,
+            show_destination_hash_warning: false,
             source_hashes: Vec::new(),
+            destination_hashes: Vec::new(),
             hash_progress_text: String::new(),
             hash_files_processed: 0,
             hash_files_total: 0,
@@ -177,6 +184,7 @@ impl GraftApp {
             robocopy_child: None,
             output_thread: None,
             hash_thread_source: None,
+            hash_thread_destination: None,
             cancel_requested: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -738,14 +746,15 @@ impl GraftApp {
                 self.console_rx = None;
                 self.output_thread = None;
 
-                // Start hashing if enabled and robocopy succeeded (exit code < 8)
+                // Start hashing if any hash option is enabled and robocopy succeeded (exit code < 8)
                 let last_exit_code = self.transfer_stats.robocopy_exit_code;
-                
-                if self.enable_hashing && last_exit_code < 8 {
+                let hash_requested = self.enable_hashing || self.enable_destination_hashing;
+
+                if hash_requested && last_exit_code < 8 {
                     self.start_hashing();
-                } else if self.enable_hashing && last_exit_code >= 8 {
-                    self.log("Skipping source file hashing due to robocopy errors");
-                    self.add_console_line(">>> Skipping source file hashing due to robocopy errors".to_string());
+                } else if hash_requested && last_exit_code >= 8 {
+                    self.log("Skipping hash operations due to robocopy errors");
+                    self.add_console_line(">>> Skipping hash operations due to robocopy errors".to_string());
                     self.save_log_to_history();
                     self.state = AppState::Idle;
                 } else {
@@ -759,22 +768,34 @@ impl GraftApp {
     }
 
     fn start_hashing(&mut self) {
-        self.log("Starting source file hashing...");
-        self.add_console_line(String::new());
-        self.add_console_line(">>> Starting source file hashing...".to_string());
-
         self.source_hashes.clear();
+        self.destination_hashes.clear();
         self.hash_progress_text = "Initializing...".to_string();
         self.hash_files_processed = 0;
         self.hash_files_total = 0;
+        self.hash_thread_source = None;
+        self.hash_thread_destination = None;
 
         let (tx, rx) = mpsc::channel::<HashProgress>();
         self.hash_progress_rx = Some(rx);
 
-        // Start hashing source only
-        let source_path = PathBuf::from(&self.source_path);
         let cancel_flag = Arc::clone(&self.cancel_requested);
-        self.hash_thread_source = Some(hash_directory(&source_path, tx, cancel_flag));
+
+        if self.enable_hashing {
+            self.log("Starting source file hashing...");
+            self.add_console_line(String::new());
+            self.add_console_line(">>> Starting source file hashing...".to_string());
+
+            let source_path = PathBuf::from(&self.source_path);
+            self.hash_thread_source = Some(hash_directory(&source_path, tx, cancel_flag));
+        } else if self.enable_destination_hashing {
+            self.log("Starting destination file hashing...");
+            self.add_console_line(String::new());
+            self.add_console_line(">>> Starting destination file hashing...".to_string());
+
+            let destination_path = PathBuf::from(&self.destination_path);
+            self.hash_thread_destination = Some(hash_directory(&destination_path, tx, cancel_flag));
+        }
 
         self.state = AppState::Hashing;
     }
@@ -800,7 +821,12 @@ impl GraftApp {
             match progress {
                 HashProgress::Starting(total) => {
                     self.hash_files_total += total;
-                    self.hash_progress_text = format!("Hashing {} source files...", self.hash_files_total);
+                    // Determine if hashing source or destination
+                    if self.hash_thread_destination.is_none() {
+                        self.hash_progress_text = format!("Hashing {} source files...", self.hash_files_total);
+                    } else {
+                        self.hash_progress_text = format!("Hashing {} destination files...", self.hash_files_total);
+                    }
                 }
                 HashProgress::FileStarted(path) => {
                     self.hash_progress_text = format!("Hashing: {}", path);
@@ -814,11 +840,21 @@ impl GraftApp {
                     ));
                 }
                 HashProgress::Complete(hashes) => {
-                    self.source_hashes = hashes;
-                    self.add_console_line(format!(
-                        ">>> Source hashing complete: {} files",
-                        self.source_hashes.len()
-                    ));
+                    if self.hash_thread_destination.is_none() {
+                        // Source hashing complete
+                        self.source_hashes = hashes;
+                        self.add_console_line(format!(
+                            ">>> Source hashing complete: {} files",
+                            self.source_hashes.len()
+                        ));
+                    } else {
+                        // Destination hashing complete
+                        self.destination_hashes = hashes;
+                        self.add_console_line(format!(
+                            ">>> Destination hashing complete: {} files",
+                            self.destination_hashes.len()
+                        ));
+                    }
                 }
                 HashProgress::Error(e) => {
                     self.log(&format!("Hash error: {}", e));
@@ -834,26 +870,196 @@ impl GraftApp {
             .map(|h| h.is_finished())
             .unwrap_or(true);
 
-        if source_done && !self.source_hashes.is_empty() {
-            // Collect summary lines first to avoid borrow conflict
-            let summary_lines: Vec<String> = self.source_hashes.iter()
-                .map(|fh| format!("  {} | SHA-256: {} | {} bytes", fh.relative_path, fh.hash, fh.size))
-                .collect();
-            let count = self.source_hashes.len();
-
-            self.add_console_line(String::new());
-            self.add_console_line(">>> Source File Hash Summary:".to_string());
-            for line in summary_lines {
-                self.add_console_line(line);
+        if source_done && self.hash_thread_source.is_some() {
+            if let Some(handle) = self.hash_thread_source.take() {
+                match handle.join() {
+                    Ok(Ok(hashes)) => {
+                        if self.source_hashes.is_empty() {
+                            self.source_hashes = hashes;
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        self.log(&format!("Source hashing failed: {}", e));
+                        self.add_console_line(format!(">>> Source hashing failed: {}", e));
+                    }
+                    Err(_) => {
+                        self.log("Source hashing thread panicked");
+                        self.add_console_line(">>> Source hashing thread panicked".to_string());
+                    }
+                }
             }
-            self.log(&format!("Source file hashing complete: {} files hashed", count));
 
-            self.hash_thread_source = None;
+            if self.source_hashes.is_empty() {
+                self.add_console_line(">>> Source hashing complete: 0 files".to_string());
+                self.log("Source file hashing complete: 0 files hashed");
+            } else {
+                let count = self.source_hashes.len();
+                let preview_count = count.min(25);
+                let preview_lines: Vec<String> = self
+                    .source_hashes
+                    .iter()
+                    .take(preview_count)
+                    .map(|fh| {
+                        format!(
+                            "  {} | SHA-256: {} | {} bytes",
+                            fh.relative_path,
+                            fh.hash,
+                            fh.size
+                        )
+                    })
+                    .collect();
+
+                self.add_console_line(String::new());
+                self.add_console_line(">>> Source File Hash Summary:".to_string());
+                self.add_console_line(format!("  Total hashed files: {}", count));
+                self.add_console_line(format!("  Showing first {} files:", preview_count));
+                for line in preview_lines {
+                    self.add_console_line(line);
+                }
+                if count > preview_count {
+                    self.add_console_line(format!(
+                        "  ... {} additional files omitted from live console output",
+                        count - preview_count
+                    ));
+                }
+                self.log(&format!("Source file hashing complete: {} files hashed", count));
+            }
+
+            // If destination hashing is not enabled, source hashing is the terminal stage.
+            if !self.enable_destination_hashing {
+                self.hash_progress_rx = None;
+                self.save_log_to_history();
+                self.state = AppState::Idle;
+                return;
+            }
+
+            // Start destination hashing if enabled
+            if self.enable_destination_hashing {
+                self.hash_progress_text = "Initializing destination hashing...".to_string();
+                self.hash_files_processed = 0;
+                self.hash_files_total = 0;
+                self.destination_hashes.clear();
+                
+                self.add_console_line(String::new());
+                self.add_console_line(">>> Starting destination file hashing...".to_string());
+                self.log("Starting destination file hashing...");
+
+                let (tx, rx) = mpsc::channel::<HashProgress>();
+                self.hash_progress_rx = Some(rx);
+
+                let dest_path = PathBuf::from(&self.destination_path);
+                let cancel_flag = Arc::clone(&self.cancel_requested);
+                self.hash_thread_destination = Some(hash_directory(&dest_path, tx, cancel_flag));
+                
+                // Continue hashing state
+                return;
+            }
+        }
+
+        // Check if destination thread is done
+        let dest_done = self
+            .hash_thread_destination
+            .as_ref()
+            .map(|h| h.is_finished())
+            .unwrap_or(true);
+
+        if dest_done && self.hash_thread_destination.is_some() {
+            if let Some(handle) = self.hash_thread_destination.take() {
+                match handle.join() {
+                    Ok(Ok(hashes)) => {
+                        if self.destination_hashes.is_empty() {
+                            self.destination_hashes = hashes;
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        self.log(&format!("Destination hashing failed: {}", e));
+                        self.add_console_line(format!(">>> Destination hashing failed: {}", e));
+                    }
+                    Err(_) => {
+                        self.log("Destination hashing thread panicked");
+                        self.add_console_line(">>> Destination hashing thread panicked".to_string());
+                    }
+                }
+            }
+
+            if self.destination_hashes.is_empty() {
+                self.add_console_line(">>> Destination hashing complete: 0 files".to_string());
+                self.log("Destination file hashing complete: 0 files hashed");
+            } else {
+                let count = self.destination_hashes.len();
+                let preview_count = count.min(25);
+                let preview_lines: Vec<String> = self
+                    .destination_hashes
+                    .iter()
+                    .take(preview_count)
+                    .map(|fh| {
+                        format!(
+                            "  {} | SHA-256: {} | {} bytes",
+                            fh.relative_path,
+                            fh.hash,
+                            fh.size
+                        )
+                    })
+                    .collect();
+
+                self.add_console_line(String::new());
+                self.add_console_line(">>> Destination File Hash Summary:".to_string());
+                self.add_console_line(format!("  Total hashed files: {}", count));
+                self.add_console_line(format!("  Showing first {} files:", preview_count));
+                for line in preview_lines {
+                    self.add_console_line(line);
+                }
+                if count > preview_count {
+                    self.add_console_line(format!(
+                        "  ... {} additional files omitted from live console output",
+                        count - preview_count
+                    ));
+                }
+                self.log(&format!("Destination file hashing complete: {} files hashed", count));
+            }
+
+            // Compare hashes if destination hashing was done
+            if self.enable_destination_hashing && !self.source_hashes.is_empty() && !self.destination_hashes.is_empty() {
+                self.add_console_line(String::new());
+                self.add_console_line(">>> Comparing source and destination hashes...".to_string());
+                let verification = compare_hashes(&self.source_hashes, &self.destination_hashes);
+                
+                self.add_console_line(String::new());
+                self.add_console_line(">>> Hash Verification Report:".to_string());
+                
+                if verification.matched.is_empty() && verification.mismatched.is_empty() && 
+                   verification.missing_in_dest.is_empty() && verification.extra_in_dest.is_empty() {
+                    self.add_console_line("✓ All files matched perfectly!".to_string());
+                    self.log("Hash verification: All files matched perfectly");
+                } else {
+                    self.add_console_line(format!("Summary: {}", verification.summary()));
+                    
+                    if !verification.matched.is_empty() {
+                        self.add_console_line(format!("✓ Matched: {} files", verification.matched.len()));
+                    }
+                    if !verification.mismatched.is_empty() {
+                        self.add_console_line(format!("✗ Mismatched: {} files", verification.mismatched.len()));
+                        for (path, src_hash, dst_hash) in &verification.mismatched {
+                            self.add_console_line(format!("  {} | Source: {} | Dest: {}",
+                                path, &src_hash[..16], &dst_hash[..16]));
+                        }
+                    }
+                    if !verification.missing_in_dest.is_empty() {
+                        self.add_console_line(format!("⚠ Missing in destination: {} files", verification.missing_in_dest.len()));
+                    }
+                    if !verification.extra_in_dest.is_empty() {
+                        self.add_console_line(format!("ℹ Extra in destination: {} files", verification.extra_in_dest.len()));
+                    }
+                    
+                    self.log(&format!("Hash verification: {}", verification.summary()));
+                }
+            }
+
             self.hash_progress_rx = None;
-            
+
             // Save log to history after hashing is complete
             self.save_log_to_history();
-            
+
             self.state = AppState::Idle;
         }
     }
@@ -989,6 +1195,7 @@ impl eframe::App for GraftApp {
         }
 
         self.render_destructive_warning(ctx);
+        self.render_destination_hash_warning(ctx);
         self.render_about_dialog(ctx);
 
         // Menu bar
@@ -1129,7 +1336,36 @@ impl eframe::App for GraftApp {
 
                 ui.separator();
 
-                ui.checkbox(&mut self.enable_hashing, "Include Source File Hash (SHA-256)");
+                ui.vertical(|ui| {
+                    ui.checkbox(&mut self.enable_hashing, "Include Source File Hash (SHA-256)");
+
+                    ui.horizontal(|ui| {
+                        let checkbox_clicked = ui.checkbox(&mut self.enable_destination_hashing,
+                            "Include Destination Hash Verification (SHA-256)").clicked();
+
+                        if self.enable_destination_hashing && checkbox_clicked {
+                            // Show warning when enabling
+                            self.show_destination_hash_warning = true;
+                        }
+
+                        let info_clicked = ui
+                            .small_button("ℹ")
+                            .on_hover_text(
+                                "Enables SHA-256 hashing of destination after transfer.\n\
+                                If source hashing is also enabled, the app automatically compares source and destination hashes.\n\
+                                This may take considerable time if destination is on a slow network connection."
+                            )
+                            .clicked();
+
+                        if info_clicked {
+                            self.show_destination_hash_warning = true;
+                        }
+                    });
+
+                    if self.enable_hashing && self.enable_destination_hashing {
+                        ui.label("Both hash options enabled: source and destination hashes will be compared automatically.");
+                    }
+                });
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     match self.state {
@@ -1597,6 +1833,43 @@ impl GraftApp {
                         if self.state == AppState::Idle {
                             self.start_robocopy();
                         }
+                    }
+                });
+            });
+    }
+
+    fn render_destination_hash_warning(&mut self, ctx: &egui::Context) {
+        if !self.show_destination_hash_warning {
+            return;
+        }
+
+        egui::Window::new("Destination Hash Verification")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label("⚠ Performance Warning");
+                ui.add_space(4.0);
+                ui.label(
+                    "Enabling destination hash verification will hash all files in the destination \
+                    directory after the transfer completes. This can take considerable time if the \
+                    destination is located on a slow network connection.\n\n\
+                    If source hashing is also enabled, GRAFT will automatically compare source and \
+                    destination hashes and report matched, mismatched, missing, and extra files.\n\n\
+                    Typical performance:\n\
+                    • Local drive: ~100-500 MB/s\n\
+                    • LAN (Gigabit): ~50-100 MB/s\n\
+                    • WAN/Slow network: 1-10 MB/s or slower\n\n\
+                    For a 100 GB transfer on a slow WAN, hashing could take 2-3+ hours."
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        self.enable_destination_hashing = false;
+                        self.show_destination_hash_warning = false;
+                    }
+                    if ui.button("✓ Continue").clicked() {
+                        self.show_destination_hash_warning = false;
                     }
                 });
             });

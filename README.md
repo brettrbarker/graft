@@ -119,9 +119,9 @@ MIT License - See [LICENSE](LICENSE) for details.
 
 - Built with [egui](https://github.com/emilk/egui) and [eframe](https://github.com/emilk/egui/tree/master/crates/eframe)
 - File dialogs by [rfd](https://github.com/PolyMeilex/rfd)
-- Developed with assistance from GitHub Copilot (Claude)
+- Developed with assistance from GitHub Copilot (Claude/ChatGPT)
 
 ## Security Notes
 
 - This project uses `cargo audit` for dependency advisories; run `cargo audit` locally.
-- Current advisory status: `paste` is flagged as unmaintained (RUSTSEC-2024-0436) via transitive GUI dependencies. No known vulnerabilities are reported at this time.
+- Current advisory status: no findings
