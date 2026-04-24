@@ -1,13 +1,14 @@
 //! Main application GUI module
 
 use crate::hasher::{
-    format_hash_results, hash_directory, compare_hashes,
+    collect_files, format_hash_results, hash_directory, compare_hashes,
     FileHash, HashProgress,
 };
 use crate::history::{CommandHistory, HistoryEntry};
 use crate::robocopy::{PresetGroup, RobocopyOption, RobocopyOptions};
 use chrono::Local;
 use eframe::egui;
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -1076,14 +1077,9 @@ impl GraftApp {
     }
 
     fn export_log(&self) {
-        // Build default filename: graft_YYYY-MM-DD[_TICKET].txt
-        let date_str = Local::now().format("%Y-%m-%d").to_string();
-        let default_filename = if !self.aft_ticket_number.is_empty() {
-            let sanitized_ticket = self.aft_ticket_number.trim().replace(' ', "_");
-            format!("graft_{}_{}.txt", date_str, sanitized_ticket)
-        } else {
-            format!("graft_{}.txt", date_str)
-        };
+        let ticket = self.aft_ticket_number.trim();
+        let ticket = if ticket.is_empty() { None } else { Some(ticket) };
+        let default_filename = HistoryEntry::generate_log_filename_for_timestamp(Local::now(), ticket);
 
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("Text files", &["txt"])
@@ -1149,6 +1145,20 @@ impl GraftApp {
         }
         content.push('\n');
 
+        let file_status_entries = self.extract_file_status_entries();
+        content.push_str("=== FILE LIST ===\n");
+        if file_status_entries.is_empty() {
+            content.push_str("No file-level status entries were captured for this run.\n");
+            content.push('\n');
+        } else {
+            content.push_str("Status | File\n");
+            content.push_str("-------|-----\n");
+            for (status, file_path) in file_status_entries {
+                content.push_str(&format!("{} | {}\n", status, file_path));
+            }
+            content.push('\n');
+        }
+
         // Source file hash summary
         if !self.source_hashes.is_empty() {
             content.push_str("=== SOURCE FILE HASHES ===\n");
@@ -1161,6 +1171,114 @@ impl GraftApp {
         content.push('\n');
         
         content
+    }
+
+    /// Extract copied or already-synced file entries from robocopy output.
+    fn extract_file_status_entries(&self) -> Vec<(String, String)> {
+        let status_markers = [
+            ("NEW FILE", "Copied"),
+            ("NEWER", "Copied"),
+            ("OLDER", "Copied"),
+            ("CHANGED", "Copied"),
+            ("TWEAKED", "Copied"),
+            ("SAME", "Already Synced"),
+        ];
+
+        let mut entries = Vec::new();
+        let mut seen = HashSet::new();
+
+        for line in &self.console_output {
+            let text = line.text.trim();
+            if text.is_empty() || text.starts_with(">>>") {
+                continue;
+            }
+
+            let upper = text.to_ascii_uppercase();
+
+            for (marker, status) in status_markers {
+                if let Some(idx) = upper.find(marker) {
+                    let raw_path = text[idx + marker.len()..].trim();
+                    let file_path = Self::normalize_robocopy_file_path(raw_path);
+                    if file_path.is_empty() {
+                        break;
+                    }
+
+                    let dedupe_key = format!("{}|{}", status, file_path.to_ascii_lowercase());
+                    if seen.insert(dedupe_key) {
+                        entries.push((status.to_string(), file_path));
+                    }
+                    break;
+                }
+            }
+        }
+
+        if entries.is_empty() {
+            entries = self.build_fallback_synced_file_entries();
+        }
+
+        entries
+    }
+
+    /// Fallback when robocopy doesn't emit per-file SAME rows: if summary indicates
+    /// all files were already in sync, enumerate source files as Already Synced.
+    fn build_fallback_synced_file_entries(&self) -> Vec<(String, String)> {
+        let stats = &self.transfer_stats;
+        let fully_synced = stats.robocopy_exit_code == 0
+            && stats.files_total > 0
+            && stats.files_copied == 0
+            && stats.files_mismatch == 0
+            && stats.files_failed == 0;
+
+        if !fully_synced || self.source_path.trim().is_empty() {
+            return Vec::new();
+        }
+
+        let source_root = PathBuf::from(&self.source_path);
+        let files = match collect_files(&source_root) {
+            Ok(files) => files,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut relative_paths: Vec<String> = files
+            .into_iter()
+            .filter_map(|path| {
+                path.strip_prefix(&source_root)
+                    .ok()
+                    .map(|p| p.to_string_lossy().to_string())
+            })
+            .collect();
+
+        relative_paths.sort_by_key(|p| p.to_ascii_lowercase());
+
+        relative_paths
+            .into_iter()
+            .map(|path| ("Already Synced".to_string(), path))
+            .collect()
+    }
+
+    /// Normalize a file path column extracted from a robocopy output line.
+    fn normalize_robocopy_file_path(raw: &str) -> String {
+        let mut value = raw.trim();
+
+        // Some robocopy rows include a leading size token before the path.
+        loop {
+            let mut parts = value.splitn(2, char::is_whitespace);
+            let first = parts.next().unwrap_or("");
+            let rest = parts.next().unwrap_or("").trim_start();
+
+            let looks_like_size = !first.is_empty()
+                && first
+                    .chars()
+                    .all(|ch| ch.is_ascii_digit() || ch == ',' || ch == '.');
+
+            if looks_like_size && !rest.is_empty() {
+                value = rest;
+            } else {
+                break;
+            }
+        }
+
+        value.trim_matches('"').trim().to_string()
     }
 
     /// Save the current log to the history entry and automatically to disk

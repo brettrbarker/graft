@@ -108,8 +108,19 @@ impl HistoryEntry {
 
     /// Generate a log filename for this entry
     pub fn generate_log_filename(&self) -> String {
-        let timestamp = self.timestamp.format("%Y-%m-%d_%H-%M-%S");
-        if let Some(ref ticket) = self.ticket_number {
+        Self::generate_log_filename_for_timestamp(
+            self.timestamp,
+            self.ticket_number.as_deref(),
+        )
+    }
+
+    /// Generate a log filename from a timestamp and optional ticket number.
+    pub fn generate_log_filename_for_timestamp(
+        timestamp: DateTime<Local>,
+        ticket_number: Option<&str>,
+    ) -> String {
+        let timestamp = timestamp.format("%Y-%m-%d_%H-%M-%S");
+        if let Some(ticket) = ticket_number {
             let sanitized_ticket = Self::sanitize_filename_component(ticket);
             format!("graft_{}_{}.log", timestamp, sanitized_ticket)
         } else {
