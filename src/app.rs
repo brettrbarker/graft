@@ -450,9 +450,12 @@ impl GraftApp {
 
     fn build_current_args(&self) -> Result<Vec<String>, String> {
         let (source, file_filter) = self.resolved_source_and_filter()?;
-        Ok(self
-            .options
-            .build_args_with_filter(&source, &self.destination_path, file_filter.as_deref()))
+        Ok(match file_filter {
+            Some(filter) => self
+                .options
+                .build_args_with_filter(&source, &self.destination_path, Some(&filter)),
+            None => self.options.build_args(&source, &self.destination_path),
+        })
     }
 
     fn source_file_name(&self) -> Option<String> {
@@ -503,6 +506,21 @@ impl GraftApp {
         }
 
         labels
+    }
+
+    fn disable_file_mode_incompatible_options(&mut self) -> Vec<&'static str> {
+        let incompatible = self.file_mode_incompatible_options();
+        if incompatible.is_empty() {
+            return incompatible;
+        }
+
+        self.options.copy_subdirs.enabled = false;
+        self.options.copy_subdirs_empty.enabled = false;
+        self.options.copy_levels.enabled = false;
+        self.options.mirror.enabled = false;
+        self.options.purge.enabled = false;
+
+        incompatible
     }
 
     fn spawn_single_file_hashing(
@@ -559,14 +577,13 @@ impl GraftApp {
             return;
         }
 
-        let incompatible = self.file_mode_incompatible_options();
-        if !incompatible.is_empty() {
-            self.log("Validation Error: file source mode has incompatible options enabled");
-            self.add_console_line("❌ Error: File source mode is incompatible with these options:".to_string());
-            for label in incompatible {
-                self.add_console_line(format!("❌ {}", label));
+        let disabled_options = self.disable_file_mode_incompatible_options();
+        if !disabled_options.is_empty() {
+            self.log("File source mode: disabled incompatible options");
+            self.add_console_line("⚠ File source mode: ignoring incompatible options: ".to_string());
+            for label in disabled_options {
+                self.add_console_line(format!("⚠ {}", label));
             }
-            return;
         }
 
         let option_errors = self.options.validate_enabled_options();
