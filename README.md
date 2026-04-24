@@ -19,7 +19,8 @@ Graft is a Windows GUI application that provides a user-friendly interface for M
   - Copy All & Preserve Attributes
   - Incremental Backup
   - Quick Copy
-- **SHA-256 Hash Verification** - Verify file integrity after copy operations
+- **SHA-256 Hashing and Verification** - Hash source files and optionally compare source/destination hashes after transfer
+- **Hash Failure Visibility** - Unreadable or unhashable files are surfaced as warnings and cause final verification to fail
 - **Real-time Console Output** - Watch Robocopy progress live
 - **Command History** - Save and reuse frequently used configurations
 - **Log Export** - Save operation logs for auditing
@@ -58,8 +59,16 @@ The executable will be at `target/release/graft.exe`
 
 1. **Select Source and Destination** - Use the Browse buttons or type paths directly
 2. **Choose a Preset** - Or manually configure options in the collapsible sections
-3. **Enable Hash Verification** (optional) - Check "Verify with SHA-256 hashing" for critical transfers
+3. **Enable Hashing** (optional)
+  - Enable **"Include Source File Hash (SHA-256)"** to hash source files
+  - Optionally enable **"Include Destination Hash Verification (SHA-256)"** to hash destination files and compare
 4. **Click Run Robocopy** - Monitor progress in the Console Output panel
+
+### Hash Verification Behavior
+
+- Source hashing can be used independently to generate source-side integrity evidence.
+- When both source and destination hashing are enabled, Graft compares hashes automatically and prints a hash verification report.
+- If any file cannot be hashed (for example due to permissions or read errors), the app records path-specific warnings and marks hash verification as failed.
 
 ### Robocopy Exit Codes
 

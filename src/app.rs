@@ -119,6 +119,8 @@ pub struct GraftApp {
     show_destination_hash_warning: bool,
     source_hashes: Vec<FileHash>,
     destination_hashes: Vec<FileHash>,
+    source_hash_failures: Vec<String>,
+    destination_hash_failures: Vec<String>,
     hash_progress_text: String,
     hash_files_processed: usize,
     hash_files_total: usize,
@@ -189,6 +191,8 @@ impl GraftApp {
             show_destination_hash_warning: false,
             source_hashes: Vec::new(),
             destination_hashes: Vec::new(),
+            source_hash_failures: Vec::new(),
+            destination_hash_failures: Vec::new(),
             hash_progress_text: String::new(),
             hash_files_processed: 0,
             hash_files_total: 0,
@@ -227,7 +231,7 @@ impl GraftApp {
         // Accent/status colors
         let error = egui::Color32::from_rgb(255, 84, 73);
         
-        let mut style = (*ctx.style()).clone();
+        let mut style = (*ctx.global_style()).clone();
         
         // Visuals for dark mode
         let mut visuals = egui::Visuals::dark();
@@ -328,7 +332,7 @@ impl GraftApp {
             egui::FontId::new(13.0, egui::FontFamily::Monospace),
         );
         
-        ctx.set_style(style);
+        ctx.set_global_style(style);
     }
 
     fn log(&mut self, message: &str) {
@@ -532,26 +536,44 @@ impl GraftApp {
         thread::spawn(move || {
             if cancel_flag.load(Ordering::Relaxed) {
                 let msg = "Cancelled by user".to_string();
-                let _ = progress_tx.send(HashProgress::Error(msg.clone()));
+                let _ = progress_tx.send(HashProgress::Error {
+                    path: None,
+                    message: msg.clone(),
+                });
                 return Err(msg);
             }
 
             if !file_path.exists() {
                 let msg = format!("File does not exist: {}", file_path.display());
-                let _ = progress_tx.send(HashProgress::Error(msg.clone()));
+                let _ = progress_tx.send(HashProgress::Error {
+                    path: Some(display_name.clone()),
+                    message: msg.clone(),
+                });
                 return Err(msg);
             }
 
             if !file_path.is_file() {
                 let msg = format!("Path is not a file: {}", file_path.display());
-                let _ = progress_tx.send(HashProgress::Error(msg.clone()));
+                let _ = progress_tx.send(HashProgress::Error {
+                    path: Some(display_name.clone()),
+                    message: msg.clone(),
+                });
                 return Err(msg);
             }
 
             let _ = progress_tx.send(HashProgress::Starting(1));
             let _ = progress_tx.send(HashProgress::FileStarted(display_name.clone()));
 
-            let hash = hash_file(&file_path)?;
+            let hash = match hash_file(&file_path) {
+                Ok(hash) => hash,
+                Err(e) => {
+                    let _ = progress_tx.send(HashProgress::Error {
+                        path: Some(display_name.clone()),
+                        message: e.clone(),
+                    });
+                    return Err(e);
+                }
+            };
             let size = std::fs::metadata(&file_path)
                 .map(|m| m.len())
                 .unwrap_or(0);
@@ -981,6 +1003,8 @@ impl GraftApp {
     fn start_hashing(&mut self) {
         self.source_hashes.clear();
         self.destination_hashes.clear();
+        self.source_hash_failures.clear();
+        self.destination_hash_failures.clear();
         self.hash_progress_text = "Initializing...".to_string();
         self.hash_files_processed = 0;
         self.hash_files_total = 0;
@@ -1099,9 +1123,26 @@ impl GraftApp {
                         ));
                     }
                 }
-                HashProgress::Error(e) => {
-                    self.log(&format!("Hash error: {}", e));
-                    self.add_console_line(format!(">>> Hash error: {}", e));
+                HashProgress::Error { path, message } => {
+                    let is_destination_stage = self.hash_thread_destination.is_some();
+
+                    if let Some(path_value) = path {
+                        let failures = if is_destination_stage {
+                            &mut self.destination_hash_failures
+                        } else {
+                            &mut self.source_hash_failures
+                        };
+
+                        if !failures.contains(&path_value) {
+                            failures.push(path_value.clone());
+                        }
+
+                        self.log(&format!("Hash error [{}]: {}", path_value, message));
+                        self.add_console_line(format!(">>> Hash error [{}]: {}", path_value, message));
+                    } else {
+                        self.log(&format!("Hash error: {}", message));
+                        self.add_console_line(format!(">>> Hash error: {}", message));
+                    }
                 }
             }
         }
@@ -1166,6 +1207,28 @@ impl GraftApp {
                     ));
                 }
                 self.log(&format!("Source file hashing complete: {} files hashed", count));
+            }
+
+            if !self.source_hash_failures.is_empty() {
+                let source_failure_preview: Vec<String> =
+                    self.source_hash_failures.iter().take(25).cloned().collect();
+                self.add_console_line(format!(
+                    ">>> Source hashing warning: {} files could not be hashed",
+                    self.source_hash_failures.len()
+                ));
+                for path in source_failure_preview {
+                    self.add_console_line(format!("  ⚠ {}", path));
+                }
+                if self.source_hash_failures.len() > 25 {
+                    self.add_console_line(format!(
+                        "  ... {} additional source hash failures omitted",
+                        self.source_hash_failures.len() - 25
+                    ));
+                }
+                self.log(&format!(
+                    "Source hashing completed with {} unreadable/unhashable files",
+                    self.source_hash_failures.len()
+                ));
             }
 
             // If destination hashing is not enabled, source hashing is the terminal stage.
@@ -1282,17 +1345,64 @@ impl GraftApp {
                 self.log(&format!("Destination file hashing complete: {} files hashed", count));
             }
 
+            if !self.destination_hash_failures.is_empty() {
+                let destination_failure_preview: Vec<String> = self
+                    .destination_hash_failures
+                    .iter()
+                    .take(25)
+                    .cloned()
+                    .collect();
+                self.add_console_line(format!(
+                    ">>> Destination hashing warning: {} files could not be hashed",
+                    self.destination_hash_failures.len()
+                ));
+                for path in destination_failure_preview {
+                    self.add_console_line(format!("  ⚠ {}", path));
+                }
+                if self.destination_hash_failures.len() > 25 {
+                    self.add_console_line(format!(
+                        "  ... {} additional destination hash failures omitted",
+                        self.destination_hash_failures.len() - 25
+                    ));
+                }
+                self.log(&format!(
+                    "Destination hashing completed with {} unreadable/unhashable files",
+                    self.destination_hash_failures.len()
+                ));
+            }
+
             // Compare hashes if destination hashing was done
-            if self.enable_destination_hashing && !self.source_hashes.is_empty() && !self.destination_hashes.is_empty() {
+            if self.enable_hashing && self.enable_destination_hashing {
                 self.add_console_line(String::new());
                 self.add_console_line(">>> Comparing source and destination hashes...".to_string());
                 let verification = compare_hashes(&self.source_hashes, &self.destination_hashes);
+                let has_hash_failures =
+                    !self.source_hash_failures.is_empty() || !self.destination_hash_failures.is_empty();
+                let verification_failed = has_hash_failures
+                    || !verification.mismatched.is_empty()
+                    || !verification.missing_in_dest.is_empty()
+                    || !verification.extra_in_dest.is_empty();
                 
                 self.add_console_line(String::new());
                 self.add_console_line(">>> Hash Verification Report:".to_string());
+
+                if has_hash_failures {
+                    self.add_console_line("✗ Verification FAILED: some files could not be hashed.".to_string());
+                    if !self.source_hash_failures.is_empty() {
+                        self.add_console_line(format!(
+                            "⚠ Source hash failures: {} files",
+                            self.source_hash_failures.len()
+                        ));
+                    }
+                    if !self.destination_hash_failures.is_empty() {
+                        self.add_console_line(format!(
+                            "⚠ Destination hash failures: {} files",
+                            self.destination_hash_failures.len()
+                        ));
+                    }
+                }
                 
-                if verification.matched.is_empty() && verification.mismatched.is_empty() && 
-                   verification.missing_in_dest.is_empty() && verification.extra_in_dest.is_empty() {
+                if !verification_failed {
                     self.add_console_line("✓ All files matched perfectly!".to_string());
                     self.log("Hash verification: All files matched perfectly");
                 } else {
@@ -1315,6 +1425,13 @@ impl GraftApp {
                         self.add_console_line(format!("ℹ Extra in destination: {} files", verification.extra_in_dest.len()));
                     }
                     
+                    if has_hash_failures {
+                        self.log(&format!(
+                            "Hash verification failed due to {} source and {} destination hash failures",
+                            self.source_hash_failures.len(),
+                            self.destination_hash_failures.len()
+                        ));
+                    }
                     self.log(&format!("Hash verification: {}", verification.summary()));
                 }
             }
@@ -1572,22 +1689,11 @@ impl GraftApp {
 }
 
 impl eframe::App for GraftApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Check async operations
-        self.check_robocopy_done();
-        self.check_hashing_done();
-
-        // Request repaint if running
-        if self.state != AppState::Idle {
-            ctx.request_repaint();
-        }
-
-        self.render_destructive_warning(ctx);
-        self.render_destination_hash_warning(ctx);
-        self.render_about_dialog(ctx);
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
 
         // Menu bar
-        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+        egui::Panel::top("menu_bar").show_inside(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("Export Log...").clicked() {
@@ -1609,7 +1715,7 @@ impl eframe::App for GraftApp {
         });
 
         // Top panel with paths
-        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+        egui::Panel::top("top_panel").show_inside(ui, |ui| {
             ui.add_space(8.0);
             ui.heading("GRAFT - Graphical Robocopy Assured File Transfer Tool");
             ui.add_space(8.0);
@@ -1633,7 +1739,7 @@ impl eframe::App for GraftApp {
                         self.update_source_mode_from_path();
                     }
                 }
-                
+
                 // Recent paths dropdown
                 let recent_sources = self.history.get_recent_source_paths().to_vec();
                 if !recent_sources.is_empty() {
@@ -1648,7 +1754,7 @@ impl eframe::App for GraftApp {
                             }
                         });
                 }
-                
+
                 ui.add(
                     egui::TextEdit::singleline(&mut self.source_path)
                         .desired_width(ui.available_width())
@@ -1669,7 +1775,7 @@ impl eframe::App for GraftApp {
                         self.destination_path = path.to_string_lossy().to_string();
                     }
                 }
-                
+
                 // Recent paths dropdown
                 let recent_dests = self.history.get_recent_dest_paths().to_vec();
                 if !recent_dests.is_empty() {
@@ -1683,7 +1789,7 @@ impl eframe::App for GraftApp {
                             }
                         });
                 }
-                
+
                 ui.add(
                     egui::TextEdit::singleline(&mut self.destination_path)
                         .desired_width(ui.available_width())
@@ -1731,10 +1837,8 @@ impl eframe::App for GraftApp {
                     {
                         self.request_start_robocopy();
                     }
-                } else {
-                    if ui.button("⏹ Cancel").clicked() {
-                        self.cancel_operation();
-                    }
+                } else if ui.button("⏹ Cancel").clicked() {
+                    self.cancel_operation();
                 }
 
                 ui.separator();
@@ -1743,8 +1847,12 @@ impl eframe::App for GraftApp {
                     ui.checkbox(&mut self.enable_hashing, "Include Source File Hash (SHA-256)");
 
                     ui.horizontal(|ui| {
-                        let checkbox_clicked = ui.checkbox(&mut self.enable_destination_hashing,
-                            "Include Destination Hash Verification (SHA-256)").clicked();
+                        let checkbox_clicked = ui
+                            .checkbox(
+                                &mut self.enable_destination_hashing,
+                                "Include Destination Hash Verification (SHA-256)",
+                            )
+                            .clicked();
 
                         if self.enable_destination_hashing && checkbox_clicked {
                             // Show warning when enabling
@@ -1756,7 +1864,7 @@ impl eframe::App for GraftApp {
                             .on_hover_text(
                                 "Enables SHA-256 hashing of destination after transfer.\n\
                                 If source hashing is also enabled, the app automatically compares source and destination hashes.\n\
-                                This may take considerable time if destination is on a slow network connection."
+                                This may take considerable time if destination is on a slow network connection.",
                             )
                             .clicked();
 
@@ -1766,7 +1874,9 @@ impl eframe::App for GraftApp {
                     });
 
                     if self.enable_hashing && self.enable_destination_hashing {
-                        ui.label("Both hash options enabled: source and destination hashes will be compared automatically.");
+                        ui.label(
+                            "Both hash options enabled: source and destination hashes will be compared automatically.",
+                        );
                     }
                 });
 
@@ -1791,11 +1901,11 @@ impl eframe::App for GraftApp {
         });
 
         // Bottom panel with log
-        egui::TopBottomPanel::bottom("log_panel")
+        egui::Panel::bottom("log_panel")
             .resizable(true)
-            .min_height(100.0)
-            .default_height(150.0)
-            .show(ctx, |ui| {
+            .min_size(100.0)
+            .default_size(150.0)
+            .show_inside(ui, |ui| {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.heading("Log");
@@ -1822,11 +1932,11 @@ impl eframe::App for GraftApp {
             });
 
         // Right panel with console
-        egui::SidePanel::right("console_panel")
+        egui::Panel::right("console_panel")
             .resizable(true)
-            .min_width(300.0)
-            .default_width(700.0)
-            .show(ctx, |ui| {
+            .min_size(300.0)
+            .default_size(700.0)
+            .show_inside(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.heading("Console Output");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1842,9 +1952,8 @@ impl eframe::App for GraftApp {
                     .stick_to_bottom(true);
 
                 if self.console_scroll_to_bottom {
-                    scroll_area = scroll_area.scroll_bar_visibility(
-                        egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
-                    );
+                    scroll_area = scroll_area
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible);
                     self.console_scroll_to_bottom = false;
                 }
 
@@ -1853,11 +1962,11 @@ impl eframe::App for GraftApp {
                     for line in &self.console_output {
                         let color = match line.line_type {
                             ConsoleLineType::Normal => ui.style().visuals.text_color(),
-                            ConsoleLineType::Command => egui::Color32::from_rgb(79, 195, 247),  // Cyan/blue
-                            ConsoleLineType::Success => egui::Color32::from_rgb(102, 187, 106), // Green
-                            ConsoleLineType::Warning => egui::Color32::from_rgb(255, 183, 77),  // Orange
-                            ConsoleLineType::Error => egui::Color32::from_rgb(255, 84, 73),     // Red
-                            ConsoleLineType::Summary => egui::Color32::from_rgb(149, 117, 205), // Purple
+                            ConsoleLineType::Command => egui::Color32::from_rgb(79, 195, 247),
+                            ConsoleLineType::Success => egui::Color32::from_rgb(102, 187, 106),
+                            ConsoleLineType::Warning => egui::Color32::from_rgb(255, 183, 77),
+                            ConsoleLineType::Error => egui::Color32::from_rgb(255, 84, 73),
+                            ConsoleLineType::Summary => egui::Color32::from_rgb(149, 117, 205),
                         };
                         ui.colored_label(color, &line.text);
                     }
@@ -1865,7 +1974,7 @@ impl eframe::App for GraftApp {
             });
 
         // Central panel with options/history tabs
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.current_tab, MainTab::Options, "⚙ Options");
                 ui.selectable_value(&mut self.current_tab, MainTab::History, "📜 History");
@@ -1877,6 +1986,21 @@ impl eframe::App for GraftApp {
                 MainTab::History => self.render_history_tab(ui),
             }
         });
+    }
+
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Check async operations
+        self.check_robocopy_done();
+        self.check_hashing_done();
+
+        // Request repaint if running
+        if self.state != AppState::Idle {
+            ctx.request_repaint();
+        }
+
+        self.render_destructive_warning(ctx);
+        self.render_destination_hash_warning(ctx);
+        self.render_about_dialog(ctx);
     }
 }
 
