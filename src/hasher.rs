@@ -55,7 +55,10 @@ pub enum HashProgress {
     FileStarted(String),       // File path
     FileComplete(FileHash),    // Completed file hash
     Complete(Vec<FileHash>),   // All hashes complete
-    Error(String),             // Error message
+    Error {
+        path: Option<String>,
+        message: String,
+    },
 }
 
 /// Hash a single file using SHA-256
@@ -131,7 +134,10 @@ pub fn hash_directory(
         for file_path in files {
             // Check for cancellation
             if cancel_flag.load(Ordering::Relaxed) {
-                let _ = progress_tx.send(HashProgress::Error("Cancelled by user".to_string()));
+                let _ = progress_tx.send(HashProgress::Error {
+                    path: None,
+                    message: "Cancelled by user".to_string(),
+                });
                 return Err("Cancelled by user".to_string());
             }
             
@@ -155,7 +161,10 @@ pub fn hash_directory(
                     hashes.push(file_hash);
                 }
                 Err(e) => {
-                    let _ = progress_tx.send(HashProgress::Error(e.clone()));
+                    let _ = progress_tx.send(HashProgress::Error {
+                        path: Some(relative),
+                        message: e,
+                    });
                     continue;
                 }
             }
@@ -588,7 +597,13 @@ mod tests {
                     final_hashes = hashes;
                     break;
                 }
-                Ok(HashProgress::Error(e)) => panic!("Hash error: {}", e),
+                Ok(HashProgress::Error { path, message }) => {
+                    if let Some(path) = path {
+                        panic!("Hash error [{}]: {}", path, message)
+                    } else {
+                        panic!("Hash error: {}", message)
+                    }
+                }
                 Ok(_) => {}
                 Err(_) => break,
             }
