@@ -1076,14 +1076,9 @@ impl GraftApp {
     }
 
     fn export_log(&self) {
-        // Build default filename: graft_YYYY-MM-DD[_TICKET].txt
-        let date_str = Local::now().format("%Y-%m-%d").to_string();
-        let default_filename = if !self.aft_ticket_number.is_empty() {
-            let sanitized_ticket = self.aft_ticket_number.trim().replace(' ', "_");
-            format!("graft_{}_{}.txt", date_str, sanitized_ticket)
-        } else {
-            format!("graft_{}.txt", date_str)
-        };
+        let ticket = self.aft_ticket_number.trim();
+        let ticket = if ticket.is_empty() { None } else { Some(ticket) };
+        let default_filename = HistoryEntry::generate_log_filename_for_timestamp(Local::now(), ticket);
 
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("Text files", &["txt"])
