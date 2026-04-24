@@ -562,10 +562,27 @@ impl RobocopyOptions {
 
     /// Build the command line arguments
     pub fn build_args(&self, source: &str, destination: &str) -> Vec<String> {
+        self.build_args_with_filter(source, destination, None)
+    }
+
+    /// Build command line arguments with an optional file filter.
+    pub fn build_args_with_filter(
+        &self,
+        source: &str,
+        destination: &str,
+        file_filter: Option<&str>,
+    ) -> Vec<String> {
         let mut args = vec![
             source.to_string(),
             destination.to_string(),
         ];
+
+        if let Some(filter) = file_filter {
+            let filter = filter.trim();
+            if !filter.is_empty() {
+                args.push(filter.to_string());
+            }
+        }
 
         // Helper to add option
         let add_opt = |args: &mut Vec<String>, opt: &RobocopyOption| {
@@ -635,7 +652,17 @@ impl RobocopyOptions {
 
     /// Get the full command string for display
     pub fn build_command_string(&self, source: &str, destination: &str) -> String {
-        let args = self.build_args(source, destination);
+        self.build_command_string_with_filter(source, destination, None)
+    }
+
+    /// Get the full command string for display with an optional file filter.
+    pub fn build_command_string_with_filter(
+        &self,
+        source: &str,
+        destination: &str,
+        file_filter: Option<&str>,
+    ) -> String {
+        let args = self.build_args_with_filter(source, destination, file_filter);
         let display_args: Vec<String> = args
             .iter()
             .map(|arg| Self::quote_arg_for_display(arg))
@@ -1178,5 +1205,30 @@ mod tests {
         assert_eq!(args[0], "C:\\src path");
         assert_eq!(args[1], "D:\\dst path");
         assert!(args.contains(&"/COPY:DATSOU".to_string()));
+    }
+
+    #[test]
+    fn test_build_args_with_file_filter() {
+        let options = RobocopyOptions::new_empty();
+
+        let args = options.build_args_with_filter("C:\\src", "D:\\dst", Some("single.bin"));
+
+        assert_eq!(args[0], "C:\\src");
+        assert_eq!(args[1], "D:\\dst");
+        assert_eq!(args[2], "single.bin");
+    }
+
+    #[test]
+    fn test_build_command_string_with_file_filter() {
+        let options = RobocopyOptions::new_empty();
+
+        let cmd = options.build_command_string_with_filter(
+            "C:\\src folder",
+            "D:\\dst",
+            Some("my file.txt"),
+        );
+
+        assert!(cmd.contains("\"C:\\src folder\""));
+        assert!(cmd.contains("\"my file.txt\""));
     }
 }

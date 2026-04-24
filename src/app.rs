@@ -1,7 +1,7 @@
 //! Main application GUI module
 
 use crate::hasher::{
-    collect_files, format_hash_results, hash_directory, compare_hashes,
+    collect_files, format_hash_results, hash_directory, hash_file, compare_hashes,
     FileHash, HashProgress,
 };
 use crate::history::{CommandHistory, HistoryEntry};
@@ -10,7 +10,7 @@ use chrono::Local;
 use eframe::egui;
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,6 +30,12 @@ enum AppState {
 enum MainTab {
     Options,
     History,
+}
+
+#[derive(PartialEq, Clone, Copy)]
+enum SourceSelectionMode {
+    Folder,
+    File,
 }
 
 /// Console output line type for syntax highlighting
@@ -82,6 +88,7 @@ pub struct GraftApp {
     // Paths
     source_path: String,
     destination_path: String,
+    source_mode: SourceSelectionMode,
 
     // Robocopy options
     options: RobocopyOptions,
@@ -153,10 +160,17 @@ impl GraftApp {
         } else {
             (String::new(), String::new(), RobocopyOptions::default())
         };
+
+        let source_mode = if !source_path.is_empty() && Path::new(&source_path).is_file() {
+            SourceSelectionMode::File
+        } else {
+            SourceSelectionMode::Folder
+        };
         
         Self {
             source_path,
             destination_path,
+            source_mode,
             options,
             history,
             selected_history_id: None,
@@ -403,12 +417,173 @@ impl GraftApp {
         labels
     }
 
+    fn resolved_source_and_filter(&self) -> Result<(String, Option<String>), String> {
+        match self.source_mode {
+            SourceSelectionMode::Folder => Ok((self.source_path.clone(), None)),
+            SourceSelectionMode::File => {
+                let source = Path::new(&self.source_path);
+                let parent = source
+                    .parent()
+                    .ok_or_else(|| "Source file must have a parent directory".to_string())?;
+                let file_name = source
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| "Source file name is invalid".to_string())?;
+                Ok((
+                    parent.to_string_lossy().to_string(),
+                    Some(file_name.to_string()),
+                ))
+            }
+        }
+    }
+
+    fn build_current_command_string(&self) -> String {
+        match self.resolved_source_and_filter() {
+            Ok((source, file_filter)) => self
+                .options
+                .build_command_string_with_filter(&source, &self.destination_path, file_filter.as_deref()),
+            Err(_) => self
+                .options
+                .build_command_string(&self.source_path, &self.destination_path),
+        }
+    }
+
+    fn build_current_args(&self) -> Result<Vec<String>, String> {
+        let (source, file_filter) = self.resolved_source_and_filter()?;
+        Ok(match file_filter {
+            Some(filter) => self
+                .options
+                .build_args_with_filter(&source, &self.destination_path, Some(&filter)),
+            None => self.options.build_args(&source, &self.destination_path),
+        })
+    }
+
+    fn source_file_name(&self) -> Option<String> {
+        if self.source_mode != SourceSelectionMode::File {
+            return None;
+        }
+
+        Path::new(&self.source_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.to_string())
+    }
+
+    fn destination_file_target_path(&self) -> Option<PathBuf> {
+        let file_name = self.source_file_name()?;
+        Some(PathBuf::from(&self.destination_path).join(file_name))
+    }
+
+    fn update_source_mode_from_path(&mut self) {
+        let path = Path::new(&self.source_path);
+        if path.is_file() {
+            self.source_mode = SourceSelectionMode::File;
+        } else if path.is_dir() {
+            self.source_mode = SourceSelectionMode::Folder;
+        }
+    }
+
+    fn file_mode_incompatible_options(&self) -> Vec<&'static str> {
+        let mut labels = Vec::new();
+        if self.source_mode != SourceSelectionMode::File {
+            return labels;
+        }
+
+        if self.options.copy_subdirs.enabled {
+            labels.push("Copy Subdirectories (/S)");
+        }
+        if self.options.copy_subdirs_empty.enabled {
+            labels.push("Copy Empty Subdirs (/E)");
+        }
+        if self.options.copy_levels.enabled {
+            labels.push("Copy Levels (/LEV)");
+        }
+        if self.options.mirror.enabled {
+            labels.push("Mirror Mode (/MIR)");
+        }
+        if self.options.purge.enabled {
+            labels.push("Purge Destination (/PURGE)");
+        }
+
+        labels
+    }
+
+    fn disable_file_mode_incompatible_options(&mut self) -> Vec<&'static str> {
+        let incompatible = self.file_mode_incompatible_options();
+        if incompatible.is_empty() {
+            return incompatible;
+        }
+
+        self.options.copy_subdirs.enabled = false;
+        self.options.copy_subdirs_empty.enabled = false;
+        self.options.copy_levels.enabled = false;
+        self.options.mirror.enabled = false;
+        self.options.purge.enabled = false;
+
+        incompatible
+    }
+
+    fn spawn_single_file_hashing(
+        file_path: PathBuf,
+        display_name: String,
+        progress_tx: mpsc::Sender<HashProgress>,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> JoinHandle<Result<Vec<FileHash>, String>> {
+        thread::spawn(move || {
+            if cancel_flag.load(Ordering::Relaxed) {
+                let msg = "Cancelled by user".to_string();
+                let _ = progress_tx.send(HashProgress::Error(msg.clone()));
+                return Err(msg);
+            }
+
+            if !file_path.exists() {
+                let msg = format!("File does not exist: {}", file_path.display());
+                let _ = progress_tx.send(HashProgress::Error(msg.clone()));
+                return Err(msg);
+            }
+
+            if !file_path.is_file() {
+                let msg = format!("Path is not a file: {}", file_path.display());
+                let _ = progress_tx.send(HashProgress::Error(msg.clone()));
+                return Err(msg);
+            }
+
+            let _ = progress_tx.send(HashProgress::Starting(1));
+            let _ = progress_tx.send(HashProgress::FileStarted(display_name.clone()));
+
+            let hash = hash_file(&file_path)?;
+            let size = std::fs::metadata(&file_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+
+            let file_hash = FileHash {
+                path: file_path,
+                relative_path: display_name,
+                hash,
+                size,
+            };
+
+            let _ = progress_tx.send(HashProgress::FileComplete(file_hash.clone()));
+            let _ = progress_tx.send(HashProgress::Complete(vec![file_hash.clone()]));
+            Ok(vec![file_hash])
+        })
+    }
+
     fn request_start_robocopy(&mut self) {
         // Validate paths first
         if let Err(error) = self.validate_paths() {
             self.log(&format!("Validation Error: {}", error));
             self.add_console_line(format!("❌ Error: {}", error));
             return;
+        }
+
+        let disabled_options = self.disable_file_mode_incompatible_options();
+        if !disabled_options.is_empty() {
+            self.log("File source mode: disabled incompatible options");
+            self.add_console_line("⚠ File source mode: ignoring incompatible options: ".to_string());
+            for label in disabled_options {
+                self.add_console_line(format!("⚠ {}", label));
+            }
         }
 
         let option_errors = self.options.validate_enabled_options();
@@ -443,8 +618,6 @@ impl GraftApp {
 
     /// Validate source and destination paths
     fn validate_paths(&self) -> Result<(), String> {
-        use std::path::Path;
-
         if self.source_path.is_empty() {
             return Err("Source path cannot be empty".to_string());
         }
@@ -462,6 +635,24 @@ impl GraftApp {
             return Err(format!("Source path does not exist: {}", self.source_path));
         }
 
+        // Source can be a folder or a single file, depending on the selected mode.
+        if source.exists() {
+            match self.source_mode {
+                SourceSelectionMode::Folder if !source.is_dir() => {
+                    return Err("Source must be a folder when Source Type is set to Folder".to_string());
+                }
+                SourceSelectionMode::File if !source.is_file() => {
+                    return Err("Source must be a file when Source Type is set to File".to_string());
+                }
+                _ => {}
+            }
+        }
+
+        // Destination must always be a directory if it already exists.
+        if dest.exists() && !dest.is_dir() {
+            return Err("Destination must be a folder".to_string());
+        }
+
         // Check if paths are the same
         if let (Ok(src_canon), Ok(dst_canon)) = (source.canonicalize(), dest.canonicalize()) {
             if src_canon == dst_canon {
@@ -472,14 +663,15 @@ impl GraftApp {
             return Err("Source and destination cannot be the same path".to_string());
         }
 
-        // Check if destination is inside source
-        if dest.starts_with(source) {
-            return Err("Destination cannot be inside the source directory".to_string());
-        }
+        // Directory nesting checks only apply when source is a directory.
+        if self.source_mode == SourceSelectionMode::Folder {
+            if dest.starts_with(source) {
+                return Err("Destination cannot be inside the source directory".to_string());
+            }
 
-        // Check if source is inside destination (could cause issues with mirror/purge)
-        if source.starts_with(dest) && (self.options.mirror.enabled || self.options.purge.enabled) {
-            return Err("Source cannot be inside destination when using Mirror or Purge options".to_string());
+            if source.starts_with(dest) && (self.options.mirror.enabled || self.options.purge.enabled) {
+                return Err("Source cannot be inside destination when using Mirror or Purge options".to_string());
+            }
         }
 
         // Check path length (Windows MAX_PATH is 260, but we'll be conservative)
@@ -503,7 +695,7 @@ impl GraftApp {
         // Reset cancel flag for new operation
         self.cancel_requested.store(false, Ordering::Relaxed);
         
-        let command = self.options.build_command_string(&self.source_path, &self.destination_path);
+        let command = self.build_current_command_string();
         self.log_entries.clear(); // Clear log for new transfer
         self.log(&format!("Preset: {}", self.options.current_preset.name()));
         self.log(&format!("Starting: {}", command));
@@ -537,7 +729,14 @@ impl GraftApp {
         self.current_entry_id = Some(entry_id);
 
         // Build args
-        let args = self.options.build_args(&self.source_path, &self.destination_path);
+        let args = match self.build_current_args() {
+            Ok(args) => args,
+            Err(e) => {
+                self.log(&format!("Failed to build robocopy arguments: {}", e));
+                self.add_console_line(format!("Error: Failed to build robocopy arguments: {}", e));
+                return;
+            }
+        };
 
         // Start robocopy process
         match Command::new("robocopy")
@@ -798,15 +997,47 @@ impl GraftApp {
             self.add_console_line(String::new());
             self.add_console_line(">>> Starting source file hashing...".to_string());
 
-            let source_path = PathBuf::from(&self.source_path);
-            self.hash_thread_source = Some(hash_directory(&source_path, tx, cancel_flag));
+            if self.source_mode == SourceSelectionMode::File {
+                let source_path = PathBuf::from(&self.source_path);
+                let display_name = self
+                    .source_file_name()
+                    .unwrap_or_else(|| source_path.to_string_lossy().to_string());
+                self.hash_thread_source = Some(Self::spawn_single_file_hashing(
+                    source_path,
+                    display_name,
+                    tx,
+                    cancel_flag,
+                ));
+            } else {
+                let source_path = PathBuf::from(&self.source_path);
+                self.hash_thread_source = Some(hash_directory(&source_path, tx, cancel_flag));
+            }
         } else if self.enable_destination_hashing {
             self.log("Starting destination file hashing...");
             self.add_console_line(String::new());
             self.add_console_line(">>> Starting destination file hashing...".to_string());
 
-            let destination_path = PathBuf::from(&self.destination_path);
-            self.hash_thread_destination = Some(hash_directory(&destination_path, tx, cancel_flag));
+            if self.source_mode == SourceSelectionMode::File {
+                if let Some(destination_path) = self.destination_file_target_path() {
+                    let display_name = self
+                        .source_file_name()
+                        .unwrap_or_else(|| destination_path.to_string_lossy().to_string());
+                    self.hash_thread_destination = Some(Self::spawn_single_file_hashing(
+                        destination_path,
+                        display_name,
+                        tx,
+                        cancel_flag,
+                    ));
+                } else {
+                    self.log("Destination hash setup failed: source file name is invalid");
+                    self.add_console_line(">>> Destination hash setup failed: source file name is invalid".to_string());
+                    self.state = AppState::Idle;
+                    return;
+                }
+            } else {
+                let destination_path = PathBuf::from(&self.destination_path);
+                self.hash_thread_destination = Some(hash_directory(&destination_path, tx, cancel_flag));
+            }
         }
 
         self.state = AppState::Hashing;
@@ -959,9 +1190,30 @@ impl GraftApp {
                 let (tx, rx) = mpsc::channel::<HashProgress>();
                 self.hash_progress_rx = Some(rx);
 
-                let dest_path = PathBuf::from(&self.destination_path);
                 let cancel_flag = Arc::clone(&self.cancel_requested);
-                self.hash_thread_destination = Some(hash_directory(&dest_path, tx, cancel_flag));
+                if self.source_mode == SourceSelectionMode::File {
+                    if let Some(dest_file_path) = self.destination_file_target_path() {
+                        let display_name = self
+                            .source_file_name()
+                            .unwrap_or_else(|| dest_file_path.to_string_lossy().to_string());
+                        self.hash_thread_destination = Some(Self::spawn_single_file_hashing(
+                            dest_file_path,
+                            display_name,
+                            tx,
+                            cancel_flag,
+                        ));
+                    } else {
+                        self.log("Destination hash setup failed: source file name is invalid");
+                        self.add_console_line(">>> Destination hash setup failed: source file name is invalid".to_string());
+                        self.hash_progress_rx = None;
+                        self.save_log_to_history();
+                        self.state = AppState::Idle;
+                        return;
+                    }
+                } else {
+                    let dest_path = PathBuf::from(&self.destination_path);
+                    self.hash_thread_destination = Some(hash_directory(&dest_path, tx, cancel_flag));
+                }
                 
                 // Continue hashing state
                 return;
@@ -1114,7 +1366,7 @@ impl GraftApp {
         }
         content.push_str(&format!("Source: {}\n", self.source_path));
         content.push_str(&format!("Destination: {}\n", self.destination_path));
-        content.push_str(&format!("Command: {}\n", self.options.build_command_string(&self.source_path, &self.destination_path)));
+        content.push_str(&format!("Command: {}\n", self.build_current_command_string()));
         content.push_str(&format!("Robocopy Exit Code: {}\n", stats.robocopy_exit_code));
         content.push('\n');
 
@@ -1230,6 +1482,13 @@ impl GraftApp {
             && stats.files_failed == 0;
 
         if !fully_synced || self.source_path.trim().is_empty() {
+            return Vec::new();
+        }
+
+        if self.source_mode == SourceSelectionMode::File {
+            if let Some(file_name) = self.source_file_name() {
+                return vec![("Already Synced".to_string(), file_name)];
+            }
             return Vec::new();
         }
 
@@ -1358,9 +1617,20 @@ impl eframe::App for GraftApp {
             // Source path row with recent paths dropdown
             ui.horizontal(|ui| {
                 ui.label("Source:        ");
+
+                ui.label("Type:");
+                ui.selectable_value(&mut self.source_mode, SourceSelectionMode::Folder, "Folder");
+                ui.selectable_value(&mut self.source_mode, SourceSelectionMode::File, "File");
+
                 if ui.button("Browse...").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                    let selected = match self.source_mode {
+                        SourceSelectionMode::Folder => rfd::FileDialog::new().pick_folder(),
+                        SourceSelectionMode::File => rfd::FileDialog::new().pick_file(),
+                    };
+
+                    if let Some(path) = selected {
                         self.source_path = path.to_string_lossy().to_string();
+                        self.update_source_mode_from_path();
                     }
                 }
                 
@@ -1373,6 +1643,7 @@ impl eframe::App for GraftApp {
                             for recent_path in &recent_sources {
                                 if ui.selectable_label(false, recent_path).clicked() {
                                     self.source_path = recent_path.clone();
+                                    self.update_source_mode_from_path();
                                 }
                             }
                         });
@@ -1381,7 +1652,10 @@ impl eframe::App for GraftApp {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.source_path)
                         .desired_width(ui.available_width())
-                        .hint_text("Select source folder or enter path..."),
+                        .hint_text(match self.source_mode {
+                            SourceSelectionMode::Folder => "Select source folder or enter path...",
+                            SourceSelectionMode::File => "Select source file or enter path...",
+                        }),
                 );
             });
 
@@ -1434,7 +1708,7 @@ impl eframe::App for GraftApp {
             // Command preview
             ui.horizontal(|ui| {
                 ui.label("Command:");
-                let cmd = self.options.build_command_string(&self.source_path, &self.destination_path);
+                let cmd = self.build_current_command_string();
                 ui.add(
                     egui::TextEdit::singleline(&mut cmd.clone())
                         .desired_width(ui.available_width() - 10.0)
@@ -1915,6 +2189,7 @@ impl GraftApp {
                             self.source_path = entry.source.clone();
                             self.destination_path = entry.destination.clone();
                             self.options = entry.options.clone();
+                            self.update_source_mode_from_path();
                         }
 
                         // Run button
@@ -1925,6 +2200,7 @@ impl GraftApp {
                             self.source_path = entry.source.clone();
                             self.destination_path = entry.destination.clone();
                             self.options = entry.options.clone();
+                            self.update_source_mode_from_path();
                             self.request_start_robocopy();
                         }
                     });
