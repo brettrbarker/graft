@@ -64,6 +64,34 @@ The executable will be at `target/release/graft.exe`
   - Optionally enable **"Include Destination Hash Verification (SHA-256)"** to hash destination files and compare
 4. **Click Run Robocopy** - Monitor progress in the Console Output panel
 
+## PowerShell Version (Native Windows)
+
+This repository now includes a native PowerShell implementation at `graft.ps1`.
+
+- Uses only built-in Windows/PowerShell features plus `robocopy`
+- Uses the **Large Files over WAN** preset options:
+  - `/E /COPY:DAT /DCOPY:DAT /J /NP /R:3 /W:5 /MT:8`
+- Supports optional source hashing and destination hash verification with SHA-256
+- Writes logs and history to `%LOCALAPPDATA%\Graft`
+
+### PowerShell Usage
+
+```powershell
+pwsh -File .\graft.ps1 -Source "D:\Data" -Destination "\\server\share\Data"
+```
+
+With destination verification:
+
+```powershell
+pwsh -File .\graft.ps1 -Source "D:\Data" -Destination "\\server\share\Data" -VerifyDestination
+```
+
+Dry-run mode:
+
+```powershell
+pwsh -File .\graft.ps1 -Source "D:\Data" -Destination "\\server\share\Data" -DryRun
+```
+
 ### Hash Verification Behavior
 
 - Source hashing can be used independently to generate source-side integrity evidence.
