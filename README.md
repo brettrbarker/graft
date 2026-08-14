@@ -1,164 +1,168 @@
 # GRAFT
 
-**GRAFT - Graphical Robocopy Assured File Transfer Tool**
+**Graphical Robocopy Assured File Transfer Tool**
 
-> **Note:** This application was developed with the assistance of AI (GitHub Copilot / Claude).
+GRAFT is a native Windows PowerShell 5.1/WPF interface for Robocopy. It provides safe, visible file transfers with configurable presets, live output, SHA-256 verification, history, and audit logs. The primary application is [`graft.ps1`](graft.ps1) and requires no third-party modules or runtimes on a stock Windows 11 installation.
 
-![Graft Screenshot](docs/screenshot.png)
+> This project was developed with AI assistance.
 
-## Overview
+![Original GRAFT interface](docs/screenshot.png)
 
-Graft is a Windows GUI application that provides a user-friendly interface for Microsoft's Robocopy command-line utility. It includes SHA-256 hash verification to ensure file integrity after transfers, making it ideal for critical data migrations and backups.
+*The screenshot shows the original Rust interface. The PowerShell GUI keeps the same overall workflow while adding an explicit Folder/File source selector.*
 
 ## Features
 
-- **Intuitive GUI** - No need to memorize Robocopy command-line flags
-- **Preset Configurations** - Quick access to common copy scenarios:
-  - Large Files over WAN
-  - Mirror with Full Metadata
-  - Copy All & Preserve Attributes
-  - Incremental Backup
-  - Quick Copy
-- **SHA-256 Hashing and Verification** - Hash source files and optionally compare source/destination hashes after transfer
-- **Hash Failure Visibility** - Unreadable or unhashable files are surfaced as warnings and cause final verification to fail
-- **Real-time Console Output** - Watch Robocopy progress live
-- **Command History** - Save and reuse frequently used configurations
-- **Log Export** - Save operation logs for auditing
-- **Transfer Statistics** - Summary of files/dirs copied, skipped, failed, and extras
-- **Menu Bar** - File menu (Export Log, Exit) and Help menu (About with version info)
-- **Destructive Option Guardrails** - Warnings and confirmation before destructive runs
-- **Material Design Dark Theme** - Easy on the eyes during long operations
+- Native WPF dark-theme GUI with resizable options, console, and log panels
+- Folder or single-file sources, destination browser, recent-path lists, and AFT ticket numbers
+- Live command preview and real-time, color-coded Robocopy output
+- Presets for Large Files over WAN, Mirror with Full Metadata, Copy All and Preserve Attributes, Incremental Backup, and Quick Copy
+- Full custom option groups for copy behavior, file selection, attributes, retries, logging, filters, performance, and dry-run mode
+- Source SHA-256 hashing, optional destination hashing, and automatic source/destination comparison
+- Clear reporting of matched, mismatched, missing, extra, unreadable, or unhashable files
+- Parsed transfer statistics for files, directories, bytes, speed, and Robocopy exit status
+- Cancellable copy and hashing operations without freezing the GUI
+- Destructive-option confirmation for `/MIR`, `/PURGE`, `/MOV`, and `/MOVE`
+- Saved and recent command history with rename, load, rerun, delete, and log-export actions
+- Automatic operation logs, manual log export, last-configuration restore, and File/Help menus
 
 ## Requirements
 
-- Windows 10/11 (Robocopy is included with Windows)
-- No installation required - single executable
+- Windows 11
+- Windows PowerShell 5.1, included with Windows
+- Robocopy and the .NET Framework WPF assemblies, also included with Windows
 
-## Installation
+PowerShell 7 (`pwsh`), Rust, package managers, and external PowerShell modules are not required for the PowerShell GUI.
 
-1. Download the latest release from the [Releases](https://github.com/brettrbarker/graft/releases) page
-2. Run `graft.exe`
+## Run the PowerShell GUI
 
-## Building from Source
+Download or clone the repository, then launch GRAFT from its directory:
 
-### Prerequisites
-
-- [Rust](https://rustup.rs/) (1.70 or later)
-
-### Build
+- Double-click `graft.cmd` for a console-free launch, or
+- run the script directly from PowerShell:
 
 ```powershell
-git clone https://github.com/brettrbarker/graft.git
-cd graft
+powershell.exe -NoProfile -STA -File .\graft.ps1
+```
+
+The `-STA` option ensures that WPF and the native file dialogs run in the required single-threaded apartment.
+
+### Execution policy
+
+Windows may block a downloaded PowerShell script. If you trust this copy of GRAFT, either unblock the script once:
+
+```powershell
+Unblock-File -LiteralPath .\graft.ps1
+powershell.exe -NoProfile -STA -File .\graft.ps1
+```
+
+Or use a process-scoped policy override for this launch only:
+
+```powershell
+powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\graft.ps1
+```
+
+The process-scoped command does not change the machine or user execution policy. Do not bypass execution policy for scripts you do not trust.
+
+## Use
+
+1. Choose whether the source is a folder or a single file, then select the source and destination.
+2. Optionally enter an AFT ticket number.
+3. Select a preset or expand the option groups to create a custom Robocopy command.
+4. Enable source hashing and, if needed, destination hash verification.
+5. Use Dry Run (`/L`) to preview a sensitive operation.
+6. Select **Run Robocopy**, review any safety confirmation, and monitor the console and status display.
+
+The default **Large Files over WAN** preset uses:
+
+```text
+/E /COPY:DAT /DCOPY:DAT /J /NP /R:3 /W:5 /MT:8
+```
+
+GRAFT also adds `/XJ` so Robocopy and verification both skip junction traversal, plus `/UNICODE` for redirected status output. A private temporary Unicode Robocopy log preserves filenames that cannot be represented by the active Windows console code page; it is streamed into the GUI and removed when the process finishes.
+
+Source hashing can be used independently. When both hash options are selected, GRAFT compares relative paths and SHA-256 values after a successful Robocopy run. Hash read failures are shown with their paths and prevent a successful verification result.
+
+Because `/MOV` and `/MOVE` delete the source before post-copy hashing can run, GRAFT requires Source File Hash to be disabled for live move operations. Destination hashing remains available, and Dry Run (`/L`) is exempt because it does not delete the source.
+
+## Data and logs
+
+GRAFT stores per-user data under:
+
+```text
+%LOCALAPPDATA%\Graft
+```
+
+- `history.json` contains command history, saved entries, recent paths, and the last configuration.
+- `logs\graft_*.log` contains automatically saved operation logs.
+
+Logs include the source, destination, effective command, ticket and user information, transfer statistics, file status information, hashes, verification results, and detailed operation output. Logs can also be exported from the current run or from a history entry.
+
+## Robocopy exit codes
+
+Robocopy uses bit-oriented status codes. GRAFT treats codes below 8 as completed without copy failures and codes 8 or higher as failures.
+
+| Code | Meaning |
+| ---: | --- |
+| 0 | No files copied; source and destination are in sync |
+| 1 | Files copied successfully |
+| 2 | Extra files or directories detected in the destination |
+| 3 | Files copied and extras detected |
+| 4 | Mismatched files or directories detected |
+| 5-7 | Copy completed with combinations of copied, extra, or mismatched items |
+| 8-15 | One or more files or directories could not be copied |
+| 16+ | Serious error; no files were copied |
+
+## Self-test
+
+Run the built-in, dependency-free checks without opening the GUI:
+
+```powershell
+powershell.exe -NoProfile -STA -File .\graft.ps1 -SelfTest
+```
+
+The self-test creates its own disposable folder under the Windows temporary directory. It validates presets, argument construction, exact Unicode Robocopy output, a real isolated copy, hashing, cancellation, case-insensitive comparison, history round trips, and WPF initialization without touching user transfer paths.
+
+## Legacy Rust application
+
+The original Rust/egui implementation remains in `src` for reference. Building it is optional and is not required to run the PowerShell GUI.
+
+```powershell
 cargo build --release
 ```
 
-The executable will be at `target/release/graft.exe`
+The legacy executable is written to `target\release\graft.exe`. Its dependencies and package metadata are defined in `Cargo.toml`, and `build.rs` creates its Windows resources.
 
-## Usage
-
-1. **Select Source and Destination** - Use the Browse buttons or type paths directly
-2. **Choose a Preset** - Or manually configure options in the collapsible sections
-3. **Enable Hashing** (optional)
-  - Enable **"Include Source File Hash (SHA-256)"** to hash source files
-  - Optionally enable **"Include Destination Hash Verification (SHA-256)"** to hash destination files and compare
-4. **Click Run Robocopy** - Monitor progress in the Console Output panel
-
-## PowerShell Version (Native Windows)
-
-This repository now includes a native PowerShell implementation at `graft.ps1`.
-
-- Uses only built-in Windows/PowerShell features plus `robocopy`
-- Uses the **Large Files over WAN** preset options:
-  - `/E /COPY:DAT /DCOPY:DAT /J /NP /R:3 /W:5 /MT:8`
-- Supports optional source hashing and destination hash verification with SHA-256
-- Writes logs and history to `%LOCALAPPDATA%\Graft`
-
-### PowerShell Usage
-
-```powershell
-pwsh -File .\graft.ps1 -Source "D:\Data" -Destination "\\server\share\Data"
-```
-
-With destination verification:
-
-```powershell
-pwsh -File .\graft.ps1 -Source "D:\Data" -Destination "\\server\share\Data" -VerifyDestination
-```
-
-Dry-run mode:
-
-```powershell
-pwsh -File .\graft.ps1 -Source "D:\Data" -Destination "\\server\share\Data" -DryRun
-```
-
-### Hash Verification Behavior
-
-- Source hashing can be used independently to generate source-side integrity evidence.
-- When both source and destination hashing are enabled, Graft compares hashes automatically and prints a hash verification report.
-- If any file cannot be hashed (for example due to permissions or read errors), the app records path-specific warnings and marks hash verification as failed.
-
-### Robocopy Exit Codes
-
-| Code  | Meaning                                              |
-| ----- | ---------------------------------------------------- |
-| 0     | No files copied - source and destination are in sync |
-| 1     | Files copied successfully                            |
-| 2     | Extra files or directories detected in destination  |
-| 3     | Files copied and extra files detected               |
-| 4     | Mismatched files or directories detected            |
-| 5-7   | Files copied with some issues                       |
-| 8-15  | Some files could not be copied (errors occurred)    |
-| 16+   | Serious error - no files were copied                |
-
-## Configuration Options
-
-### Copy Options
-
-- `/S` - Copy subdirectories (excluding empty)
-- `/E` - Copy subdirectories (including empty)
-- `/Z` - Restartable mode (survives network glitches)
-- `/B` - Backup mode (requires backup privileges)
-- `/J` - Unbuffered I/O (recommended for large files)
-
-### File Selection
-
-- `/COPY:flags` - What to copy (D=Data, A=Attributes, T=Timestamps, S=Security)
-- `/MIR` - Mirror mode (sync source to destination)
-- `/PURGE` - Delete destination files not in source
-
-### Performance
-
-- `/MT:n` - Multi-threaded copy with n threads (default 8)
-- `/R:n` - Number of retries on failed copies
-- `/W:n` - Wait time between retries (seconds)
-
-## Project Structure
+## Project structure
 
 ```text
 graft/
-├── Cargo.toml          # Rust dependencies and metadata
-├── build.rs            # Build script for Windows icon
-├── README.md           # This file
-└── src/
-    ├── main.rs         # Application entry point and icon
-    ├── app.rs          # Main GUI application logic
-    ├── robocopy.rs     # Robocopy options and command building
-    ├── hasher.rs       # SHA-256 file hashing and verification
-    └── history.rs      # Command history management
+|-- graft.cmd          # Console-free Windows launcher
+|-- graft.ps1          # Primary native PowerShell/WPF application
+|-- README.md
+|-- Cargo.toml         # Legacy Rust package definition
+|-- build.rs           # Legacy Rust Windows resources
+|-- docs/
+|   `-- screenshot.png
+`-- src/               # Legacy Rust implementation
+    |-- main.rs
+    |-- app.rs
+    |-- robocopy.rs
+    |-- hasher.rs
+    `-- history.rs
 ```
 
 ## License
 
-MIT License - See [LICENSE](LICENSE) for details.
+MIT License.
 
 ## Acknowledgments
 
-- Built with [egui](https://github.com/emilk/egui) and [eframe](https://github.com/emilk/egui/tree/master/crates/eframe)
-- File dialogs by [rfd](https://github.com/PolyMeilex/rfd)
-- Developed with assistance from GitHub Copilot (Claude/ChatGPT)
+- Robocopy, Windows PowerShell, and WPF are included with Windows.
+- The legacy Rust application uses `egui`, `eframe`, and `rfd`.
+- Development was assisted by GitHub Copilot, Claude, and ChatGPT.
 
-## Security Notes
+## Security notes
 
-- This project uses `cargo audit` for dependency advisories; run `cargo audit` locally.
-- Current advisory status: no findings
+- Review source and destination paths carefully before using destructive options.
+- Prefer Dry Run before mirror, purge, or move operations.
+- The optional Rust dependency audit can be run with `cargo audit`.
