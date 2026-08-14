@@ -6,9 +6,19 @@ GRAFT is a native Windows PowerShell 5.1/WPF interface for Robocopy. It provides
 
 > This project was developed with AI assistance.
 
-![Original GRAFT interface](docs/screenshot.png)
+## Screenshots
 
-*The screenshot shows the original Rust interface. The PowerShell GUI keeps the same overall workflow while adding an explicit Folder/File source selector.*
+### Transfer options
+
+![GRAFT PowerShell GUI showing the Options tab](docs/powershell-options.png)
+
+*Configure the source, destination, hashing, presets, and individual Robocopy options while reviewing the exact command before it runs.*
+
+### Command history
+
+![GRAFT PowerShell GUI showing the History tab](docs/powershell-history.png)
+
+*Saved and recent commands can be loaded, rerun, renamed, or exported with their operation logs. The screenshots use illustrative paths and history entries; no user transfer data is shown.*
 
 ## Features
 
@@ -142,7 +152,9 @@ graft/
 |-- Cargo.toml         # Legacy Rust package definition
 |-- build.rs           # Legacy Rust Windows resources
 |-- docs/
-|   `-- screenshot.png
+|   |-- powershell-options.png
+|   |-- powershell-history.png
+|   `-- screenshot.png # Legacy Rust interface
 `-- src/               # Legacy Rust implementation
     |-- main.rs
     |-- app.rs
